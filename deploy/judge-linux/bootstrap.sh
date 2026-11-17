@@ -81,6 +81,28 @@ make -C "$ISOLATE_SOURCE_DIR/isolate-${ISOLATE_VERSION}" isolate
 install -m 4755 -o root -g root "$ISOLATE_SOURCE_DIR/isolate-${ISOLATE_VERSION}/isolate" /usr/bin/isolate
 /usr/bin/isolate --version
 
+# isolate v2 refuses to run without an explicit configuration. Prepare the
+# box/lock roots and a delegated cgroup v2 subtree for sandbox accounting.
+install -d -m 755 -o root -g root /var/local/lib/isolate /var/lib/xinbaoyan-judge/locks
+install -d -m 755 -o root -g root /sys/fs/cgroup/isolate
+for controller in cpu memory pids io; do
+    echo "+$controller" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+    echo "+$controller" > /sys/fs/cgroup/isolate/cgroup.subtree_control 2>/dev/null || true
+done
+cat > /usr/local/etc/isolate <<'EOF'
+box_root = /var/local/lib/isolate
+lock_root = /var/lib/xinbaoyan-judge/locks
+cg_root = /sys/fs/cgroup/isolate
+first_uid = 60000
+first_gid = 60000
+num_boxes = 1000
+EOF
+for controller in cpu memory pids io; do
+    if ! grep -qw "$controller" /sys/fs/cgroup/isolate/cgroup.controllers; then
+        echo "WARNING: cgroup controller '$controller' not delegated to /sys/fs/cgroup/isolate; isolate --cg will fail." >&2
+    fi
+done
+
 install -d -m 755 -o root -g root /opt/judge-toolchains /opt/judge-toolchains/gcc13 /opt/judge-toolchains/jdk17 /opt/judge-toolchains/python312
 ln -sfn /usr/bin/gcc-13 /opt/judge-toolchains/gcc13/bin-gcc-link-target
 mkdir -p /opt/judge-toolchains/gcc13/bin

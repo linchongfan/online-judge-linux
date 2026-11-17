@@ -17,7 +17,6 @@ local subprocess execution.
 
 from __future__ import annotations
 
-import json
 import os
 import secrets
 import shutil
@@ -55,6 +54,7 @@ DISK_BLOCKS_ENV = "JUDGE_DISK_BLOCKS"
 DISK_INODES_ENV = "JUDGE_DISK_INODES"
 COMPILE_DISK_BLOCKS_ENV = "JUDGE_COMPILE_DISK_BLOCKS"
 COMPILE_DISK_INODES_ENV = "JUDGE_COMPILE_DISK_INODES"
+DISK_QUOTA_ENV = "JUDGE_ENABLE_DISK_QUOTA"
 
 DEFAULT_ISOLATE_PATH = "/usr/bin/isolate"
 DEFAULT_META_ROOT = "/var/lib/xinbaoyan-judge/meta"
@@ -72,7 +72,6 @@ _BOX_PATH = "/box"
 _TOOLCHAIN_PATH = "/toolchains"
 _REQUIRED_CGROUP_CONTROLLERS = ("cpu", "memory", "pids", "io")
 
-
 @dataclass(slots=True)
 class _SpawnState:
     """Per-spawn resources that must be rolled back on every failure path."""
@@ -87,7 +86,6 @@ class _SpawnState:
     isolate: subprocess.Popen[bytes] | None
     cleanup_started: bool = False
 
-
 def _env_int(env: Mapping[str, str], name: str, default: int) -> int:
     raw = env.get(name)
     if raw is None or not raw.strip():
@@ -100,14 +98,12 @@ def _env_int(env: Mapping[str, str], name: str, default: int) -> int:
         raise SandboxConfigurationError(f"{name} must be positive, got {raw!r}")
     return value
 
-
 def _resolve_directory(env: Mapping[str, str], name: str, default: str) -> Path:
     raw = env.get(name, default)
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise SandboxConfigurationError(f"{name} must be an absolute path: {raw!r}")
     return path
-
 
 class _OutputProxy:
     """stdout/stderr proxy with a hard per-stream byte limit.
@@ -144,6 +140,13 @@ class _OutputProxy:
     def _pump(self, name: str) -> None:
         source = self._paths[name]
         written = 0
+        # isolate creates the redirected files only after it enters the box, so
+        # the proxy must wait for them instead of failing on the first open.
+        deadline = time.monotonic() + 120
+        while not source.exists():
+            if self._stop_event.is_set() or time.monotonic() > deadline:
+                return
+            time.sleep(0.01)
         try:
             with source.open("rb", buffering=0) as stream:
                 while True:
@@ -169,10 +172,27 @@ class _OutputProxy:
         deadline = time.monotonic() + timeout_seconds
         for thread in self._threads:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        # Copy anything the early-terminated pump left behind (for example a
+        # file created just before the box was killed).
+        for name in ("stdout", "stderr"):
+            source = self._paths.get(name)
+            if source is None or not source.exists():
+                continue
+            destination = self._stdout if name == "stdout" else self._stderr
+            try:
+                destination.seek(0, os.SEEK_END)
+                current = destination.tell()
+                with source.open("rb") as stream:
+                    stream.seek(current)
+                    remaining = stream.read(max(0, self._limit_bytes - current))
+                if remaining:
+                    destination.write(remaining)
+                    destination.flush()
+            except OSError:
+                continue
 
     def snapshot(self) -> tuple[bool, str]:
         return self.exceeded, "; ".join(self._errors)
-
 
 class LinuxIsolateBackend(SandboxBackend):
     """Production sandbox adapter for an isolate-enabled Linux judge node."""
@@ -213,7 +233,11 @@ class LinuxIsolateBackend(SandboxBackend):
         self._compile_disk_inodes = _env_int(
             self._env, COMPILE_DISK_INODES_ENV, max(4096, self._default_disk_inodes * 4)
         )
+        # Project quotas need a filesystem that supports them (ext4/xfs);
+        # tmpfs box roots (docker deployment) must keep this off.
+        self._disk_quota_enabled = self._env.get(DISK_QUOTA_ENV, "").strip() == "1"
         self._states: dict[int, _SpawnState] = {}
+        self._final_info: dict[int, SandboxExecutionInfo] = {}
         self._lock = threading.Lock()
         self._mounts = self._build_mounts()
         self._meta_root.mkdir(parents=True, exist_ok=True)
@@ -308,7 +332,7 @@ class LinuxIsolateBackend(SandboxBackend):
 
     def _is_compile_command(self, argv: Sequence[str]) -> bool:
         executable = Path(argv[0]).name.lower()
-        if executable in {"javac", "gcc", "g++"}:
+        if executable in {"javac", "gcc", "g++", "gcc.exe", "g++.exe", "javac.exe"}:
             return True
         return executable.startswith("python") and len(argv) > 2 and argv[1] == "-m" and argv[2] == "py_compile"
 
@@ -340,7 +364,20 @@ class LinuxIsolateBackend(SandboxBackend):
         effective_limits = limits or ProcessLimits(wall_timeout_ms=1000, output_limit_bytes=1)
         process_limit, disk_blocks, disk_inodes, memory_limit_kb = self._limits(argv, effective_limits)
         command = self._sandbox_argv(argv)
+        command = [
+            f"/box{part[len(str(work_dir)):]}" if part.startswith(str(work_dir) + os.sep) else part
+            for part in command
+        ]
         box_id = self._init_box_with_retry(disk_blocks, disk_inodes)
+        # The bind-mounted task directory must belong to the per-box UID so
+        # isolate can create the redirected stdin/stdout files inside /box.
+        try:
+            os.chown(work_dir, self._first_uid + box_id, self._first_gid + box_id)  # type: ignore[attr-defined]
+            os.chmod(work_dir, 0o700)
+        except OSError:
+            # Unprivileged worker: the box UID still needs to create its
+            # redirected stdin/stdout files, so fall back to a writable dir.
+            os.chmod(work_dir, 0o777)
         state = _SpawnState(
             box_id=box_id,
             meta_dir=Path(tempfile.mkdtemp(prefix=f"spawn-{box_id}-", dir=self._meta_root)),
@@ -351,8 +388,10 @@ class LinuxIsolateBackend(SandboxBackend):
             proxy=None,
             isolate=None,
         )
+        for stale in (".judge-sandbox-stdout", ".judge-sandbox-stderr", ".judge-sandbox-stdin"):
+            self._remove_quietly(work_dir / stale)
         state.meta_file = state.meta_dir / "meta.json"
-        state.stdin_file = state.meta_dir / "stdin"
+        state.stdin_file = work_dir / ".judge-sandbox-stdin"
         state.stdout_file = work_dir / ".judge-sandbox-stdout"
         state.stderr_file = work_dir / ".judge-sandbox-stderr"
         shutil.copyfileobj(stdin, state.stdin_file.open("wb"))
@@ -368,11 +407,12 @@ class LinuxIsolateBackend(SandboxBackend):
             "--env=TEMP=/box",
             "--env=PATH=/usr/bin:/bin",
             f"--dir=/box={work_dir}:rw",
-            f"--dir={_TOOLCHAIN_PATH}={self._toolchain_mount_source()}:ro",
+            f"--dir={_TOOLCHAIN_PATH}={self._toolchain_mount_source()}",
+            "--dir=/etc",
             f"--meta={state.meta_file}",
-            f"--stdin={state.stdin_file}",
-            f"--stdout={state.stdout_file}",
-            f"--stderr={state.stderr_file}",
+            f"--stdin=/box/{state.stdin_file.name}",
+            f"--stdout=/box/{state.stdout_file.name}",
+            f"--stderr=/box/{state.stderr_file.name}",
             f"--wall-time={max(1, (effective_limits.wall_timeout_ms + 999) // 1000)}",
             f"--processes={process_limit}",
             f"--fsize={max(1, (effective_limits.output_limit_bytes + 1023) // 1024)}",
@@ -404,16 +444,39 @@ class LinuxIsolateBackend(SandboxBackend):
             self._rollback(state)
             raise
 
+    def _reset_cgroup(self, box_id: int) -> None:
+        """Remove a stale isolate cgroup left by a killed run."""
+        root = Path("/sys/fs/cgroup/isolate") / f"box-{box_id}"
+        if not root.exists():
+            return
+        try:
+            (root / "cgroup.kill").write_text("1", encoding="utf-8")
+        except OSError:
+            pass
+        for child in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+            try:
+                if child.is_dir():
+                    child.rmdir()
+            except OSError:
+                pass
+        try:
+            root.rmdir()
+        except OSError:
+            pass
+
     def _init_box(self, box_id: int, disk_blocks: int, disk_inodes: int) -> None:
+        self._reset_cgroup(box_id)
+        argv = [
+            str(self._isolate_path),
+            "--box-id",
+            str(box_id),
+            "--init",
+            "--cg",
+        ]
+        if self._disk_quota_enabled:
+            argv.append(f"--quota={disk_blocks},{disk_inodes}")
         result = subprocess.run(
-            [
-                str(self._isolate_path),
-                "--box-id",
-                str(box_id),
-                "--init",
-                "--cg",
-                f"--quota={disk_blocks},{disk_inodes}",
-            ],
+            argv,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -463,21 +526,36 @@ class LinuxIsolateBackend(SandboxBackend):
                 self._isolate_cleanup(state)
 
     def memory_usage_kb(self, process: subprocess.Popen[bytes]) -> int | None:
-        info = self._read_meta(process)
-        if info is None:
-            return None
-        value = info.get("cg-mem-peak-kib")
-        return value if isinstance(value, int) else None
+        state = self._state_for(process)
+        # Kernels before 5.19 have no cgroup memory.peak, so fall back to the
+        # isolate meta max-rss (whole-run rusage) and finally live usage.
+        for candidate in (
+            Path(f"/sys/fs/cgroup/isolate/box-{state.box_id}/memory.peak"),
+            Path(f"/sys/fs/cgroup/isolate/box-{state.box_id}/memory.current"),
+        ):
+            try:
+                return max(1, int(candidate.read_text(encoding="utf-8").strip()) // 1024)
+            except (OSError, ValueError):
+                continue
+        info = self._read_meta(process) or {}
+        for key in ("max-rss", "cg-mem"):
+            value = info.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+        return None
 
     def execution_info(self, process: subprocess.Popen[bytes]) -> SandboxExecutionInfo:
+        cached = self._final_info.get(process.pid)
+        if cached is not None:
+            return cached
         state = self._state_for(process)
         meta = self._read_meta(process) or {}
         status = str(meta.get("status", ""))
-        runtime_ms = meta.get("time") or meta.get("wall-time")
+        runtime_ms = meta.get("time") or meta.get("time-wall")
         if isinstance(runtime_ms, float):
             runtime_ms = int(runtime_ms * 1000)
-        wall_exceeded = status in {"TO", "SG"}
-        memory_exceeded = status == "ML"
+        wall_exceeded = status == "TO"
+        memory_exceeded = "cg-oom-killed" in meta
         output_exceeded = bool(state.proxy and state.proxy.exceeded)
         proxy_error = ""
         if state.proxy is not None:
@@ -497,7 +575,9 @@ class LinuxIsolateBackend(SandboxBackend):
             reason = SandboxTerminationReason.UNKNOWN
         infrastructure_error = proxy_error
         if status and status not in {"EX", "OK", "RE", "TO", "SG", "ML"}:
-            infrastructure_error = (infrastructure_error + f"; isolate status={status}").lstrip("; ")
+            detail = str(meta.get("message", "")).strip()
+            suffix = f"; isolate status={status}" + (f": {detail}" if detail else "")
+            infrastructure_error = (infrastructure_error + suffix).lstrip("; ")
         return SandboxExecutionInfo(
             termination_reason=reason,
             runtime_ms=runtime_ms if isinstance(runtime_ms, int) else None,
@@ -512,14 +592,35 @@ class LinuxIsolateBackend(SandboxBackend):
         state = self._state_for(process)
         if state.proxy is not None:
             state.proxy.finish()
+        try:
+            self._final_info[process.pid] = self.execution_info(process)
+        except Exception:
+            pass
         if state.isolate is not None and state.isolate.poll() is None:
             self.terminate(process)
         self._isolate_cleanup(state)
         with self._lock:
             self._states.pop(process.pid, None)
         self._remove_quietly(state.meta_dir)
-        self._remove_quietly(state.stdout_file)
-        self._remove_quietly(state.stderr_file)
+        self._relax_permissions(state.stdout_file.parent)
+
+    @staticmethod
+    def _relax_permissions(root: Path) -> None:
+        """Make box-owned artifacts removable by the unprivileged worker."""
+        for current, dirnames, filenames in os.walk(root):
+            for name in dirnames:
+                try:
+                    os.chmod(os.path.join(current, name), 0o777)
+                except OSError:
+                    pass
+            for name in filenames:
+                path = os.path.join(current, name)
+                try:
+                    # Later cases run under a different box UID, so they must
+                    # be able to reopen (and truncate) files left behind.
+                    os.chmod(path, os.stat(path).st_mode | 0o666)
+                except OSError:
+                    pass
 
     def _isolate_cleanup(self, state: _SpawnState) -> None:
         if state.cleanup_started:
@@ -547,10 +648,20 @@ class LinuxIsolateBackend(SandboxBackend):
     def _read_meta(self, process: subprocess.Popen[bytes]) -> dict[str, object] | None:
         state = self._state_for(process)
         try:
-            data = json.loads(state.meta_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            lines = state.meta_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
             return None
-        return data if isinstance(data, dict) else None
+        data: dict[str, object] = {}
+        for line in lines:
+            key, separator, value = line.partition(":")
+            if not separator:
+                continue
+            try:
+                number = float(value)
+                data[key] = int(number) if number.is_integer() else number
+            except ValueError:
+                data[key] = value
+        return data
 
     def _rollback(self, state: _SpawnState) -> None:
         if state.proxy is not None:

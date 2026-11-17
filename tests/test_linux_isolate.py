@@ -183,7 +183,9 @@ def test_spawn_uses_isolate_with_expected_limits(
     run_call = calls[1]
     assert init_call[:4] == [str(runtime_dirs["isolate"]), "--box-id", "7", "--init"]
     assert "--cg" in init_call
-    assert any(arg.startswith("--quota=51200,4096") for arg in init_call)
+    # Disk quotas are opt-in (JUDGE_ENABLE_DISK_QUOTA=1): tmpfs box roots
+    # cannot enforce project quotas, so the default init omits --quota.
+    assert not any(arg.startswith("--quota=") for arg in init_call)
     assert run_call[:4] == [str(runtime_dirs["isolate"]), "--box-id", "7", "--run"]
     assert "--cg" in run_call
     assert "--env=HOME=/box" in run_call
@@ -192,7 +194,32 @@ def test_spawn_uses_isolate_with_expected_limits(
     assert any(arg.startswith("--processes=64") for arg in run_call)
     assert any(arg.startswith("--fsize=4") for arg in run_call)
     assert any(arg.startswith("--cg-mem=65536") for arg in run_call)
-    assert run_call[-4:] == ["--", "/toolchains/python3.bin", "-I", "-B", "Main.py"]
+    assert run_call[-5:] == ["--", "/toolchains/python3.bin", "-I", "-B", "Main.py"]
+
+
+def test_disk_quota_is_opt_in(
+    tmp_path: Path,
+    toolchain: ToolchainConfig,
+    runtime_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = {
+        "JUDGE_ISOLATE_PATH": str(runtime_dirs["isolate"]),
+        ROOTFS_ENV: str(runtime_dirs["rootfs"]),
+        META_ROOT_ENV: str(runtime_dirs["meta_root"]),
+        "JUDGE_TOOLCHAIN_ROOT": str(toolchain.gcc_path.parent),
+        "JUDGE_ENABLE_DISK_QUOTA": "1",
+    }
+    backend = LinuxIsolateBackend(toolchain=toolchain, work_root=tmp_path, env=env)
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: Any) -> types.SimpleNamespace:
+        calls.append(argv)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("judge.linux_isolate.subprocess.run", fake_run)
+    backend._init_box(3, 51200, 4096)
+    assert "--quota=51200,4096" in calls[0]
 
 
 def test_meta_mapping_reports_time_limit_and_peak_memory(

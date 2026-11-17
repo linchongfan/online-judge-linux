@@ -105,7 +105,10 @@ def consume_results(block_ms: int = 5000) -> None:
             item = cast(Any, client.brpoplpush(QUEUE, PROCESSING_QUEUE, timeout=max(1, block_ms // 1000)))
             if item is None:
                 continue
-            _handle_message(client, item[1])
+            # redis-py returns the popped element directly; older releases
+            # wrapped it in a list, so accept both shapes.
+            payload = item[1] if isinstance(item, (list, tuple)) else item
+            _handle_message(client, payload)
         except redis.RedisError:
             logger.exception("Result consumer transport error; reconnecting")
             time.sleep(2)
