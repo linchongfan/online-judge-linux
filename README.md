@@ -125,14 +125,9 @@ docker compose --profile judge up -d --force-recreate judge-worker
 
 完整步骤、cgroup 前置、补丁说明、备份与回滚见 **[Docker 容器化部署](deploy/DOCKER_DEPLOYMENT.md)**。不引入容器编排时，可用 `deploy/linux/` 与 `deploy/judge-linux/` 的 systemd 方案，见 **[Linux 单机自动化部署方案](deploy/LINUX_AUTOMATED_DEPLOYMENT.md)**。
 
-首次部署会自动创建两个初始账号（幂等）：
+首次部署会自动创建两个初始账号（幂等）：管理员 `admin@123321` 与测试用户 `test@123456`（用户名可用 `DEFAULT_ADMIN_USERNAME` / `DEFAULT_TEST_USERNAME` 覆盖）。
 
-| 角色 | 账号 | 密码 |
-| --- | --- | --- |
-| 管理员 | `admin@123321` | `admin@123321` |
-| 测试用户 | `test@123456` | `test@123456` |
-
-首次登录后请立即修改密码。容器方案用 `docker compose run --rm migrate` 建号；systemd 方案可用 `CREATE_DEFAULT_USERS=0` 禁用自动创建。
+**密码不再硬编码**：未通过 `DEFAULT_ADMIN_PASSWORD` / `DEFAULT_TEST_PASSWORD` 显式指定时，部署会为每个账号生成随机密码，写入仅 root 可读的凭据文件（默认 `/etc/xinbaoyan/initial-credentials`，权限 0600；不可写时回退到 `<STORAGE_ROOT>/initial-credentials`）。部署输出会提示文件路径。首次登录后请立即修改密码并删除该文件。容器方案用 `docker compose run --rm migrate` 建号；systemd 方案可用 `CREATE_DEFAULT_USERS=0` 禁用自动创建，改用 `scripts/create_admin.py` 交互式建号。
 
 ## C 语言培养方案题库
 

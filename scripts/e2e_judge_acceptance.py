@@ -6,7 +6,9 @@ Any mismatch exits non-zero so this script can gate CI or release checks.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -58,11 +60,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000/api/v1")
     parser.add_argument("--account", default="demo")
-    parser.add_argument("--password", default="Demo12345")
+    # Never default the password into argv (visible in `ps` / shell history):
+    # read E2E_PASSWORD or prompt interactively.
+    parser.add_argument("--password", default=None)
     parser.add_argument("--problem-id", type=int, default=1000)
     args = parser.parse_args()
+    password = args.password or os.environ.get("E2E_PASSWORD") or getpass.getpass("Account password: ")
 
-    login = post(args.base_url, "/auth/login", {"account": args.account, "password": args.password})
+    login = post(args.base_url, "/auth/login", {"account": args.account, "password": password})
     token = login["accessToken"]
     print("login ok:", login["user"]["username"])
 

@@ -9,7 +9,7 @@ from app.models import JudgeStatus, JudgeTask, OutboxMessage, OutboxStatus, Subm
 from app.tasks.celery_app import celery_app
 
 
-def _build_payload(db: Session, task: JudgeTask) -> dict:
+def _build_payload(db: Session, task: JudgeTask, nonce: str) -> dict:
     submission = db.get(Submission, task.submission_id)
     version = db.get(TestDataVersion, submission.test_data_version_id) if submission else None
     if submission is None or version is None:
@@ -37,7 +37,7 @@ def _build_payload(db: Session, task: JudgeTask) -> dict:
         "submission_id": submission.id,
         "attempt": task.attempt,
         "test_data_version_id": version.id,
-        "nonce": token_urlsafe(24),
+        "nonce": nonce,
         "language": submission.language.value,
         "source_code": submission.source_code,
         "cases": serialized_cases,
@@ -54,13 +54,15 @@ def dispatch_outbox(task_id: str) -> bool:
         if task is None or outbox is None or outbox.status == OutboxStatus.DISPATCHED:
             return True
         try:
-            payload = _build_payload(db, task)
+            nonce = token_urlsafe(24)
+            payload = _build_payload(db, task, nonce)
             celery_app.send_task("judge.execute", kwargs={"payload": payload}, queue="judge")
             now = utcnow()
             # A successful send only means the task is queued: JUDGING starts
             # when a worker publishes a signed "started" event (see
             # app/tasks/results.py), which also opens the execution lease.
             task.status = JudgeStatus.PENDING
+            task.nonce = nonce
             task.queued_at = now
             task.started_at = None
             task.lease_expires_at = None

@@ -211,8 +211,8 @@ onUnmounted(() => {
         <div class="section-heading">
           <div><h2>提交趋势</h2><p>共 {{ formatNumber(totalSubmissions) }} 次提交，缺失日期按 0 次展示</p></div>
           <el-radio-group v-model="trendRange" size="small" :disabled="trendLoading">
-            <el-radio-button label="7d">近 7 天</el-radio-button>
-            <el-radio-button label="30d">近 30 天</el-radio-button>
+            <el-radio-button value="7d">近 7 天</el-radio-button>
+            <el-radio-button value="30d">近 30 天</el-radio-button>
           </el-radio-group>
         </div>
         <el-alert v-if="trendError" :title="trendError" type="error" :closable="false" show-icon role="alert" />

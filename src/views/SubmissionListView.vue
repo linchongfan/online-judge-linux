@@ -7,7 +7,7 @@ import StatusTag from '../components/StatusTag.vue'
 import { getSubmission, getSubmissionSource, listSubmissions } from '../api/submissions'
 import { getUserStats } from '../api/me'
 import { ApiError } from '../api/client'
-import { formatDateTime, formatMemoryKb, formatRuntimeMs, judgeStatusMap } from '../utils/format'
+import { formatDateTime, formatMemoryKb, formatRuntimeMs, judgeStatusMap, languageLabels } from '../utils/format'
 import type { JudgeStatus, Language, Submission, UserStats } from '../types'
 
 const router = useRouter()
@@ -31,10 +31,8 @@ let generation = 0
 let detailGeneration = 0
 let poller: ReturnType<typeof setInterval> | undefined
 
-const languageLabels: Record<Language, string> = { cpp: 'C++', c: 'C', java: 'Java', python: 'Python3' }
 const statusOptions = (Object.keys(judgeStatusMap) as JudgeStatus[]).map((value) => ({ value, label: judgeStatusMap[value].label }))
 const languageOptions = (Object.keys(languageLabels) as Language[]).map((value) => ({ value, label: languageLabels[value] }))
-const acceptedCount = computed(() => records.value.filter((item) => item.status === 'AC').length)
 const hasFilters = computed(() => Boolean(keyword.value || status.value || language.value))
 const selectedDiagnostic = computed(() => {
   const current = selectedSubmission.value
@@ -52,9 +50,11 @@ const selectedDiagnostic = computed(() => {
   return current ? advice[current.status] : advice.SE
 })
 
-async function loadRecords() {
+async function loadRecords(silent = false) {
   const current = ++generation
-  loading.value = true
+  // Background polling must not flash the full-table loading overlay every
+  // few seconds; only user-initiated loads show it.
+  if (!silent) loading.value = true
   error.value = ''
   try {
     const data = await listSubmissions({ page: currentPage.value, pageSize, keyword: keyword.value.trim() || undefined, status: status.value || undefined, language: language.value || undefined })
@@ -63,9 +63,9 @@ async function loadRecords() {
     total.value = data.total
   } catch (caught) {
     if (current !== generation) return
-    error.value = caught instanceof ApiError ? caught.message : '提交记录加载失败'
+    if (!silent) error.value = caught instanceof ApiError ? caught.message : '提交记录加载失败'
   } finally {
-    if (current === generation) loading.value = false
+    if (current === generation && !silent) loading.value = false
   }
 }
 
@@ -115,21 +115,34 @@ function goToProblem(submission: Pick<Submission, 'problemId' | 'contestId'>) {
   void router.push({ path: `/problems/${submission.problemId}`, query: problemQuery(submission) })
 }
 
-watch([keyword, status, language], () => { currentPage.value = 1; void loadRecords() })
+let keywordTimer: ReturnType<typeof setTimeout> | undefined
+watch(keyword, () => {
+  if (keywordTimer) clearTimeout(keywordTimer)
+  keywordTimer = setTimeout(() => { currentPage.value = 1; void loadRecords() }, 350)
+})
+watch([status, language], () => { currentPage.value = 1; void loadRecords() })
 watch(currentPage, () => { void loadRecords() })
 watch(detailVisible, (visible) => {
   if (!visible) selectedSubmission.value = undefined
 })
 
 void loadRecords()
-void getUserStats().then(value => { stats.value = value }).catch(() => {})
+void getUserStats().then(value => { stats.value = value }).catch(() => { stats.value = null })
 poller = setInterval(() => {
-  if (records.value.some(item => item.status === 'PENDING' || item.status === 'JUDGING')) void loadRecords()
+  if (records.value.some(item => item.status === 'PENDING' || item.status === 'JUDGING')) void loadRecords(true)
   if (selectedSubmission.value && ['PENDING', 'JUDGING'].includes(selectedSubmission.value.status)) {
-    void getSubmission(selectedSubmission.value.id).then(item => { selectedSubmission.value = item }).catch(() => {})
+    const current = detailGeneration
+    void getSubmission(selectedSubmission.value.id)
+      .then(item => { if (current === detailGeneration) selectedSubmission.value = item })
+      .catch(() => {})
   }
 }, 4000)
-onBeforeUnmount(() => { if (poller) clearInterval(poller); generation += 1 })
+onBeforeUnmount(() => {
+  if (poller) clearInterval(poller)
+  if (keywordTimer) clearTimeout(keywordTimer)
+  generation += 1
+  detailGeneration += 1
+})
 </script>
 
 <template>
@@ -147,11 +160,13 @@ onBeforeUnmount(() => { if (poller) clearInterval(poller); generation += 1 })
     </div>
 
     <section class="summary-strip surface-card" aria-label="提交概况">
-      <div><span class="summary-icon blue"><el-icon><Tickets /></el-icon></span><p>累计提交<strong>{{ stats?.submissionCount ?? total }}</strong></p></div>
+      <!-- Account-wide stats: never fall back to the filtered page counts,
+           which would silently mislabel e.g. the WA-only total as "累计提交". -->
+      <div><span class="summary-icon blue"><el-icon><Tickets /></el-icon></span><p>累计提交<strong>{{ stats ? stats.submissionCount : '—' }}</strong></p></div>
       <i />
-      <div><span class="summary-icon green"><el-icon><CircleCheck /></el-icon></span><p>通过提交<strong>{{ stats?.acceptedCount ?? acceptedCount }}</strong></p></div>
+      <div><span class="summary-icon green"><el-icon><CircleCheck /></el-icon></span><p>通过提交<strong>{{ stats ? stats.acceptedCount : '—' }}</strong></p></div>
       <i />
-      <div><span class="summary-icon orange"><el-icon><DataLine /></el-icon></span><p>真实通过率<strong>{{ stats?.acceptance ?? 0 }}%</strong></p></div>
+      <div><span class="summary-icon orange"><el-icon><DataLine /></el-icon></span><p>真实通过率<strong>{{ stats ? `${stats.acceptance}%` : '—' }}</strong></p></div>
       <span class="prototype-note">数据来自真实判题服务</span>
     </section>
 
@@ -294,7 +309,7 @@ onBeforeUnmount(() => { if (poller) clearInterval(poller); generation += 1 })
 .problem-link:hover { color: var(--primary); }
 .problem-number { color: var(--primary); background: var(--primary-soft); border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: 500; }
 .problem-extra { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
-.problem-extra > span:last-child:not(.difficulty) { display: inline-flex; align-items: center; gap: 4px; color: var(--text-tertiary); font-size: 9px; max-width: 185px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.problem-extra > span:last-child:not(.difficulty) { display: inline-flex; align-items: center; gap: 4px; color: var(--text-tertiary); font-size: 10px; max-width: 185px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .language-label { color: var(--text); font-size: 11px; padding: 4px 7px; border-radius: 5px; background: #f0f5fb; }
 .metric { font-size: 11px; color: var(--text-secondary); }.time-label { color: var(--text-secondary); font-size: 11px; }
 .submission-table :deep(.el-table__inner-wrapper::before) { display: none; }
@@ -310,21 +325,21 @@ onBeforeUnmount(() => { if (poller) clearInterval(poller); generation += 1 })
 .detail-problem { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border: 1px solid #d7e5f7; border-left: 3px solid var(--primary); border-radius: 8px; background: #f5f9ff; margin-bottom: 17px; }
 .detail-problem-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: #fff; color: var(--primary); }
 .detail-problem div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.detail-problem small { color: var(--text-tertiary); font-size: 9px; }.detail-problem strong { color: var(--text-strong); font-size: 12px; }
+.detail-problem small { color: var(--text-tertiary); font-size: 10px; }.detail-problem strong { color: var(--text-strong); font-size: 12px; }
 .detail-problem .el-button { margin-left: auto; flex: none; font-size: 11px; }
 .detail-descriptions { margin-bottom: 17px; }
 .detail-descriptions :deep(.el-descriptions__label) { color: var(--text-secondary); background: #f7faff; font-size: 11px; width: 78px; }
 .detail-descriptions :deep(.el-descriptions__content) { color: var(--text); font-size: 11px; }
 .diagnostic { border-radius: 8px; padding: 15px 16px; background: #f5f8fc; border: 1px solid var(--border); }
 .diagnostic-title { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); }
-.diagnostic-title strong { font-size: 12px; }.diagnostic-title span { margin-left: auto; color: var(--text-tertiary); font-size: 9px; }
+.diagnostic-title strong { font-size: 12px; }.diagnostic-title span { margin-left: auto; color: var(--text-tertiary); font-size: 10px; }
 .diagnostic pre { white-space: pre-wrap; word-break: break-word; margin: 12px 0 8px; color: var(--text-secondary); font-size: 10px; line-height: 1.8; font-family: 'JetBrains Mono', Consolas, monospace; }
 .diagnostic p { margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.7; }
 .diagnostic.is-success { background: #f2faf6; border-color: #dbeee5; }.diagnostic.is-success .diagnostic-title { color: var(--success); }
 .diagnostic.is-danger { background: #fff7f7; border-color: #f6e2e4; }.diagnostic.is-danger .diagnostic-title { color: var(--danger); }
 .diagnostic.is-warning { background: #fffaf2; border-color: #f2dfc3; }.diagnostic.is-warning .diagnostic-title { color: #b86c1c; }
 .diagnostic.is-pending { background: #f3f7ff; border-color: #d7e5f8; }.diagnostic.is-pending .diagnostic-title { color: var(--primary); }
-.security-note { display: flex; justify-content: center; align-items: center; gap: 5px; color: var(--text-tertiary); font-size: 9px; margin-top: 15px; }
+.security-note { display: flex; justify-content: center; align-items: center; gap: 5px; color: var(--text-tertiary); font-size: 10px; margin-top: 15px; }
 .detail-loading { display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--text-secondary); font-size: 12px; padding: 42px 0; }
 .detail-error { display: flex; flex-direction: column; align-items: center; gap: 9px; color: var(--text-secondary); font-size: 12px; padding: 34px 0; text-align: center; }
 :global(.submission-dialog) { max-width: calc(100vw - 30px); border-top: 4px solid var(--primary); border-radius: 10px; }
@@ -353,7 +368,7 @@ onBeforeUnmount(() => { if (poller) clearInterval(poller); generation += 1 })
   .heading-actions .el-button { flex: 1; }
   .summary-strip { display: grid; grid-template-columns: repeat(3, 1fr); }
   .summary-strip > div { flex-direction: column; text-align: center; }
-  .summary-strip p { font-size: 9px; }
+  .summary-strip p { font-size: 10px; }
   .filter-bar .el-select { width: calc(50% - 5px); min-width: 0; }
   .reset-button { width: 100%; }
   .table-meta > span:last-child { display: none; }

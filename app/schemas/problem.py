@@ -106,3 +106,12 @@ class TagResponse(ApiSchema):
     id: int
     name: str
     problem_count: int = 0
+
+
+class ProblemPosition(ApiSchema):
+    """Prev/next navigation without fetching the whole problem list."""
+
+    index: int = Field(ge=0)
+    total: int = Field(ge=1)
+    prev_id: int | None = None
+    next_id: int | None = None

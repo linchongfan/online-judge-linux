@@ -46,6 +46,9 @@ def process_judge_started(data: dict) -> bool:
             or task.submission_id != submission.id
             or task.attempt != message.attempt
             or submission.test_data_version_id != message.test_data_version_id
+            # Tasks dispatched before nonce persistence have nonce=NULL and
+            # skip the check; new dispatches must echo the exact nonce.
+            or (task.nonce is not None and task.nonce != message.nonce)
         ):
             raise AppError(400, "RESULT_IDENTITY_MISMATCH", "判题事件与任务不匹配")
         latest_attempt = db.scalar(select(func.max(JudgeTask.attempt)).where(JudgeTask.submission_id == submission.id))
@@ -93,6 +96,9 @@ def process_judge_result(data: dict) -> bool:
             or task.submission_id != submission.id
             or task.attempt != message.attempt
             or submission.test_data_version_id != message.test_data_version_id
+            # Tasks dispatched before nonce persistence have nonce=NULL and
+            # skip the check; new dispatches must echo the exact nonce.
+            or (task.nonce is not None and task.nonce != message.nonce)
         ):
             raise AppError(400, "RESULT_IDENTITY_MISMATCH", "判题结果与任务不匹配")
         latest_attempt = db.scalar(select(func.max(JudgeTask.attempt)).where(JudgeTask.submission_id == submission.id))

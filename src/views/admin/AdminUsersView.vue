@@ -130,6 +130,20 @@ async function toggleUserStatus(user: AdminUser) {
 
 async function changeRole(user: AdminUser, role: UserRole) {
   if (user.id === selfId.value || role === user.role || pendingIds.value.has(user.id)) return
+  // Privilege changes are the highest-impact admin action; never apply them
+  // on a bare dropdown change without explicit confirmation.
+  const granting = role === 'admin'
+  try {
+    await ElMessageBox.confirm(
+      granting
+        ? `授予管理员权限后，${user.nickname}（${user.username}）将能管理题目、测试数据、用户与判题开关。确认授予？`
+        : `移除管理员权限后，${user.nickname}（${user.username}）将只能使用普通用户功能。确认移除？`,
+      granting ? `授予管理员权限 ${user.username}` : `移除管理员权限 ${user.username}`,
+      { confirmButtonText: granting ? '确认授予' : '确认移除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
   setPending(user.id, true)
   try {
     const updated = await updateAdminUser(user.id, { role })
@@ -285,7 +299,7 @@ onUnmounted(() => {
 .avatar.tone-1 { color: var(--primary); background: #e5efff; }
 .avatar.tone-2 { color: #35668f; background: #eaf1f8; }
 .avatar.tone-3 { color: #176f69; background: #e6f3f0; }
-.self-badge { padding: 2px 6px; border: 1px solid #cfdef4; border-radius: 4px; background: var(--primary-soft); color: var(--primary); font-size: 9px; font-weight: 500; }
+.self-badge { padding: 2px 6px; border: 1px solid #cfdef4; border-radius: 4px; background: var(--primary-soft); color: var(--primary); font-size: 10px; font-weight: 500; }
 .role-select { width: 112px; }
 .solved-count { color: var(--text-strong); font-weight: 600; }
 .status-pill { border-radius: 5px; padding: 4px 8px; }

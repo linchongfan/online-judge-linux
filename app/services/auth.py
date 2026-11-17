@@ -1,6 +1,7 @@
 from datetime import timedelta
+from typing import Any, cast
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import CursorResult, delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -45,6 +46,10 @@ def token_response(user: User, session: AuthSession) -> dict:
 
 
 def register(db: Session, data: RegisterRequest, ip: str | None, user_agent: str | None) -> tuple[dict, str, bool]:
+    # Registration hashes a password with Argon2 on every call; without a
+    # limit it is a cheap CPU-exhaustion and spam-account vector.
+    if not rate_limiter.allow(f"register:{ip or 'unknown'}", 5, 3600):
+        raise AppError(429, "TOO_MANY_ATTEMPTS", "注册过于频繁，请稍后再试")
     user = User(
         username=data.username,
         nickname=data.nickname,
@@ -83,7 +88,9 @@ def refresh(db: Session, raw_token: str | None) -> tuple[dict, str, bool]:
     if not raw_token:
         raise AppError(401, "REFRESH_REQUIRED", "刷新凭证不存在")
     presented_hash = hash_token(raw_token)
-    session = db.scalar(select(AuthSession).where(AuthSession.token_hash == presented_hash))
+    # Lock the row so two concurrent refreshes (e.g. multiple tabs) cannot
+    # both rotate it and orphan one of the new tokens. No-op on SQLite.
+    session = db.scalar(select(AuthSession).where(AuthSession.token_hash == presented_hash).with_for_update())
     if session is None:
         reused = db.scalar(select(AuthSession).where(AuthSession.previous_token_hash == presented_hash))
         if reused is not None:
@@ -150,3 +157,22 @@ def revoke_user_sessions(db: Session, user_id: int) -> None:
         .where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))
         .values(revoked_at=utcnow())
     )
+
+
+def cleanup_expired_sessions(db: Session, grace_days: int = 7) -> int:
+    """Delete long-expired/revoked sessions so auth_session does not grow
+    without bound (every login creates a row; rotation reuses it)."""
+    cutoff = utcnow() - timedelta(days=grace_days)
+    result = cast(
+        "CursorResult[Any]",
+        db.execute(
+            delete(AuthSession).where(
+                or_(
+                    AuthSession.expires_at < cutoff,
+                    AuthSession.revoked_at.is_not(None) & (AuthSession.revoked_at < cutoff),
+                )
+            )
+        ),
+    )
+    db.commit()
+    return result.rowcount or 0

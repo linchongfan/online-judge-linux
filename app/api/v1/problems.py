@@ -3,14 +3,15 @@ from sqlalchemy import func, select
 
 from app.api.deps import CurrentUser, Db, OptionalUser
 from app.core.exceptions import AppError
-from app.models import Contest, ContestProblem, ContestPublication, Problem, Tag, UserRole, utcnow
+from app.models import Contest, ContestProblem, ContestPublication, Problem, ProblemStatus, Tag, UserRole, utcnow
 from app.schemas.common import Page, make_page
-from app.schemas.problem import ProblemDetail, ProblemListItem, SolutionResponse, TagResponse
+from app.schemas.problem import ProblemDetail, ProblemListItem, ProblemPosition, SolutionResponse, TagResponse
 from app.schemas.submission import SampleRunCreate, SubmissionAccepted
 from app.services.contests import can_view_contest_problem, get_contest
 from app.services.problems import (
     get_problem,
     list_problems,
+    problem_stats_bulk,
     random_problem,
     serialize_detail,
     serialize_list_item,
@@ -35,8 +36,10 @@ def problems(
     if progress and user is None:
         raise AppError(401, "AUTH_REQUIRED", "登录后才能按完成状态筛选")
     items, total = list_problems(db, user, page, page_size, keyword, difficulty, tag, progress)
+    user_id = user.id if user else None
+    stats = problem_stats_bulk(db, [item.id for item in items], user_id)
     return make_page(
-        [serialize_list_item(db, item, user.id if user else None) for item in items], total, page, page_size
+        [serialize_list_item(db, item, user_id, stats=stats[item.id]) for item in items], total, page, page_size
     )
 
 
@@ -59,8 +62,31 @@ def problem_detail(problem_id: int, db: Db, user: OptionalUser, contest_id: int 
     return serialize_detail(db, problem, user.id if user else None)
 
 
+@router.get("/{problem_id}/position", response_model=ProblemPosition)
+def problem_position(problem_id: int, db: Db, user: OptionalUser, contest_id: int | None = Query(None, ge=1)):
+    if contest_id:
+        contest = get_contest(db, contest_id)
+        is_admin = bool(user and user.role == UserRole.ADMIN)
+        if not is_admin and not can_view_contest_problem(db, contest, user):
+            raise AppError(403, "CONTEST_PROBLEM_LOCKED", "当前不能查看该赛题")
+        ids = [entry.problem_id for entry in contest.problems]
+    else:
+        ids = list(
+            db.scalars(select(Problem.id).where(Problem.status == ProblemStatus.PUBLISHED).order_by(Problem.id)).all()
+        )
+    if problem_id not in ids:
+        raise AppError(404, "PROBLEM_NOT_FOUND", "题目不存在或尚未发布")
+    index = ids.index(problem_id)
+    return {
+        "index": index,
+        "total": len(ids),
+        "prev_id": ids[index - 1] if index > 0 else None,
+        "next_id": ids[index + 1] if index + 1 < len(ids) else None,
+    }
+
+
 @router.get("/{problem_id}/solution", response_model=SolutionResponse)
-def problem_solution(problem_id: int, db: Db, user: OptionalUser, contest_id: int | None = Query(None, ge=1)):
+def problem_solution(problem_id: int, db: Db, user: OptionalUser):
     problem = get_problem(db, problem_id, user, include_unpublished=bool(user and user.role == UserRole.ADMIN))
     now = utcnow()
     ongoing = db.scalar(
@@ -96,6 +122,9 @@ def run_sample(problem_id: int, data: SampleRunCreate, db: Db, user: CurrentUser
 @tags_router.get("", response_model=list[TagResponse])
 def tags(db: Db):
     rows = db.execute(
-        select(Tag, func.count(Problem.id)).outerjoin(Tag.problems).group_by(Tag.id).order_by(Tag.name)
+        select(Tag, func.count(Problem.id))
+        .outerjoin(Tag.problems.and_(Problem.status == ProblemStatus.PUBLISHED))
+        .group_by(Tag.id)
+        .order_by(Tag.name)
     ).all()
     return [{"id": tag.id, "name": tag.name, "problem_count": count} for tag, count in rows]

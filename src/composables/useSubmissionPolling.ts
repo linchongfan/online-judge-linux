@@ -17,7 +17,7 @@ export function isTerminalSubmissionStatus(status: JudgeStatus): boolean {
 }
 
 export interface SubmissionPollingOptions {
-  pollIntervalMs?: number
+  pollIntervalMs?: MaybeRefOrGetter<number>
   immediate?: boolean
   fetcher?: (submissionId: string, options: { signal: AbortSignal }) => Promise<Submission>
   onUpdate?: (submission: Submission) => void
@@ -33,6 +33,7 @@ export function useSubmissionPolling(
   const isLoading = ref(false)
   const isPolling = ref(false)
   const pollIntervalMs = options.pollIntervalMs ?? 1_000
+  const intervalMs = (): number => Math.max(100, toValue(pollIntervalMs))
   const fetcher = options.fetcher ?? getSubmission
 
   let active = false
@@ -66,7 +67,7 @@ export function useSubmissionPolling(
     timer = setTimeout(() => {
       timer = undefined
       void poll(run)
-    }, pollIntervalMs * backoff)
+    }, intervalMs() * backoff)
   }
 
   async function poll(run: number): Promise<void> {

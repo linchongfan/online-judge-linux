@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -134,9 +135,10 @@ def main() -> None:
     items = json.loads(path.read_text(encoding="utf-8"))
     db = SessionLocal()
     try:
-        admin = db.scalar(select(User).where(User.username == "admin@123321"))
+        admin_username = os.environ.get("DEFAULT_ADMIN_USERNAME", "admin@123321")
+        admin = db.scalar(select(User).where(User.username == admin_username))
         if admin is None:
-            raise SystemExit("admin@123321 not found")
+            raise SystemExit(f"{admin_username} not found")
         for item in items:
             print(import_problem(db, admin, item))
     except Exception:

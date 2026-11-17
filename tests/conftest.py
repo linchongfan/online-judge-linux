@@ -33,14 +33,25 @@ def client(db_session: Session, tmp_path, monkeypatch) -> Generator[TestClient, 
     TestingSession = sessionmaker(bind=db_session.get_bind(), autoflush=False, expire_on_commit=False)
     settings = get_settings()
     original_storage = settings.storage_root
+    original_redis_url = settings.redis_url
     settings.storage_root = tmp_path / "storage"
     settings.storage_root.mkdir(parents=True)
+    # Isolate tests from any real Redis data: use a dedicated DB number and
+    # reset cached clients so singletons pick up the test URL.
+    base_redis_url = original_redis_url.rsplit("/", 1)[0]
+    settings.redis_url = f"{base_redis_url}/15"
     rate_limiter._local.clear()
+    rate_limiter._redis = None
+    rate_limiter._allow_script = None
+    from app.services.verification import verification_codes
+
+    verification_codes._local.clear()
+    verification_codes._redis = None
     try:
         import redis as _redis
 
-        client_redis = _redis.Redis.from_url(get_settings().redis_url, socket_connect_timeout=1, socket_timeout=1)
-        for pattern in ("login:*", "forgot:*", "submission:*", "password-reset:*", "reset-email:*"):
+        client_redis = _redis.Redis.from_url(settings.redis_url, socket_connect_timeout=1, socket_timeout=1)
+        for pattern in ("login:*", "register:*", "forgot:*", "submission:*", "password-reset:*", "reset-email:*"):
             for key in client_redis.keys(pattern):
                 client_redis.delete(key)
     except Exception:
@@ -60,6 +71,10 @@ def client(db_session: Session, tmp_path, monkeypatch) -> Generator[TestClient, 
     with TestClient(app) as test_client:
         yield test_client
     settings.storage_root = original_storage
+    settings.redis_url = original_redis_url
+    rate_limiter._redis = None
+    rate_limiter._allow_script = None
+    verification_codes._redis = None
 
 
 @pytest.fixture

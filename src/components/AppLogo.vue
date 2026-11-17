@@ -18,7 +18,7 @@ withDefaults(defineProps<{ inverse?: boolean; compact?: boolean }>(), { inverse:
 .brand-mark img { width: 43px; height: 41px; object-fit: contain; display: block; }
 .brand-type { display: flex; flex-direction: column; gap: 3px; line-height: 1; }
 .brand-type strong { color: #124fb9; font-size: 23px; font-weight: 800; letter-spacing: 1px; }
-.brand-type small { color: var(--text-tertiary); font-size: 9px; font-weight: 500; letter-spacing: .5px; }
+.brand-type small { color: var(--text-tertiary); font-size: 10px; font-weight: 500; letter-spacing: .5px; }
 .inverse { color: #fff; }
 .inverse .brand-type strong { color: #fff; }
 .inverse .brand-type small { color: rgba(255,255,255,.55); }

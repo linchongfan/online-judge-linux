@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { initializeSession, session } from '../stores/session'
+import { initializeSession, onSessionInvalidated, session } from '../stores/session'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -29,6 +29,12 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   document.title = `${String(to.meta.title ?? '页面')} · 新保研`
   await initializeSession()
+  // A transient init failure (network blip, 5xx) leaves the session
+  // uninitialized; retry once before treating the user as a guest so a
+  // momentary outage does not bounce logged-in users to the login page.
+  if (!session.initialized && (to.meta.requiresAuth || to.meta.admin)) {
+    await initializeSession()
+  }
 
   if ((to.meta.requiresAuth || to.meta.admin) && !session.loggedIn) {
     return {
@@ -36,10 +42,18 @@ router.beforeEach(async (to) => {
       query: {
         redirect: to.fullPath,
         ...(to.meta.admin ? { role: 'admin' } : {}),
+        ...(!session.initialized ? { network: '1' } : {}),
       },
     }
   }
   if (to.meta.admin && session.role !== 'admin') return { path: '/problems' }
+})
+
+onSessionInvalidated(() => {
+  const current = router.currentRoute.value
+  if ((current.meta.requiresAuth || current.meta.admin) && current.path !== '/login') {
+    void router.replace({ path: '/login', query: { redirect: current.fullPath } })
+  }
 })
 
 export default router

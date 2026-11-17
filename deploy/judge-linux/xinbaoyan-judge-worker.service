@@ -16,11 +16,19 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=30
 PrivateTmp=true
+PrivateDevices=true
 ProtectHome=true
+ProtectSystem=strict
+# isolate (setuid root) manages box directories under /var/local/lib/isolate;
+# the worker itself only writes task work dirs and spawn metadata.
+ReadWritePaths=/var/lib/xinbaoyan-judge/work /var/lib/xinbaoyan-judge/meta /var/local/lib/isolate
 ProtectKernelTunables=true
 ProtectKernelModules=true
+# isolate must create/enter cgroups for each box.
 ProtectControlGroups=false
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# isolate elevates via setuid; NoNewPrivileges would break it. The capability
+# bounding set limits what the elevated process can ever acquire.
 NoNewPrivileges=false
 CapabilityBoundingSet=SETUID SETGID SYS_ADMIN SYS_CHROOT SYS_RESOURCE
 

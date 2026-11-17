@@ -11,3 +11,13 @@ ExecStart=/opt/xinbaoyan-judge-watchdog.sh
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+# The watchdog runs rm -rf as root; confine its writable surface to the
+# directories it is actually responsible for cleaning.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xinbaoyan-judge/work /var/lib/xinbaoyan-judge/meta /var/local/lib/isolate
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictAddressFamilies=AF_UNIX

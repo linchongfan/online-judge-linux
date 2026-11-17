@@ -8,12 +8,15 @@ import hashlib
 import hmac
 import json
 import os
+import platform
 import time
+from functools import lru_cache
 from typing import Any
 
 import redis
 from celery import Celery
 
+from judge.config import JudgeConfig
 from judge.protocol import JudgeRequest, TestCase
 from judge.worker import judge
 
@@ -36,8 +39,10 @@ def _canonical(payload: dict[str, Any]) -> bytes:
 
 def _publish_result(payload: dict[str, Any]) -> None:
     secret = os.environ.get("JUDGE_RESULT_SECRET", "")
-    if len(secret) < 16:
-        raise RuntimeError("JUDGE_RESULT_SECRET must be configured")
+    # Match the application-side policy: production requires >= 32 chars.
+    minimum = 32 if os.environ.get("JUDGE_ENV", "development").lower() == "production" else 16
+    if len(secret) < minimum:
+        raise RuntimeError(f"JUDGE_RESULT_SECRET must be configured (>= {minimum} chars)")
     result_url = os.environ.get("JUDGE_RESULT_REDIS_URL") or "redis://127.0.0.1:6379/0"
     queue = os.environ.get("JUDGE_RESULT_QUEUE", "judge:results")
     signature = hmac.new(secret.encode("utf-8"), _canonical(payload), hashlib.sha256).hexdigest()
@@ -47,7 +52,10 @@ def _publish_result(payload: dict[str, Any]) -> None:
 
 def _publish_result_with_retry(payload: dict[str, Any], attempts: int = 5) -> None:
     # A lost result would leave the submission stuck in JUDGING; retry with
-    # backoff and finally let Celery redeliver (acks_late) if Redis stays down.
+    # backoff, then raise so the task-level bounded retry kicks in. If every
+    # retry fails the task ends in failure and the message is acknowledged;
+    # the application-side sweeper is the ultimate backstop (queue timeout /
+    # lease expiry re-dispatches the submission as a new attempt).
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
@@ -60,7 +68,16 @@ def _publish_result_with_retry(payload: dict[str, Any], attempts: int = 5) -> No
 
 
 def _worker_id() -> str:
-    return os.environ.get("JUDGE_WORKER_ID") or os.environ.get("COMPUTERNAME") or "judge-worker"
+    # Same default as judge/heartbeat.py so results and heartbeats identify
+    # the worker consistently when JUDGE_WORKER_ID is not set.
+    return os.environ.get("JUDGE_WORKER_ID") or platform.node() or "judge-worker"
+
+
+@lru_cache(maxsize=1)
+def _get_config() -> JudgeConfig:
+    # One sandbox backend per worker process: re-creating it per task would
+    # re-validate the host on every submission and reset box-id allocation.
+    return JudgeConfig.from_env()
 
 
 def _execution_lease_seconds(payload: dict[str, Any], case_count: int) -> int:
@@ -82,6 +99,10 @@ def execute(self, payload: dict[str, Any]) -> None:
     heartbeat.task_started()
     try:
         _execute(payload)
+    except Exception as exc:
+        # Bounded fast retry for transient failures (e.g. result Redis down).
+        # After max_retries the task fails and the sweeper re-dispatches it.
+        raise self.retry(exc=exc, countdown=10, max_retries=3) from exc
     finally:
         heartbeat.task_finished()
 
@@ -116,9 +137,7 @@ def _execute(payload: dict[str, Any]) -> None:
         time_limit_ms=payload["time_limit_ms"],
         memory_limit_kb=payload["memory_limit_kb"],
     )
-    from judge.config import JudgeConfig
-
-    result = judge(request, JudgeConfig.from_env())
+    result = judge(request, _get_config())
     result_payload = {
         "task_id": payload["task_id"],
         "submission_id": payload["submission_id"],

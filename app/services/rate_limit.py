@@ -6,24 +6,35 @@ import redis
 
 from app.core.config import get_settings
 
+# INCR and the first-request EXPIRE must be atomic: a crash between two
+# separate commands would leave the key without a TTL and rate-limit that
+# key forever.
+_ALLOW_LUA = """
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return current
+"""
+
 
 class RateLimiter:
     def __init__(self) -> None:
         self._local: dict[str, tuple[int, float]] = {}
         self._lock = Lock()
         self._redis: Any = None
+        self._allow_script: Any = None
 
     def _client(self) -> Any:
         if self._redis is None:
             self._redis = redis.Redis.from_url(get_settings().redis_url, socket_connect_timeout=0.3, socket_timeout=0.5)
+            self._allow_script = self._redis.register_script(_ALLOW_LUA)
         return self._redis
 
     def allow(self, key: str, limit: int, window_seconds: int) -> bool:
         try:
-            client = self._client()
-            current = client.incr(key)
-            if current == 1:
-                client.expire(key, window_seconds)
+            self._client()
+            current = self._allow_script(keys=[key], args=[window_seconds])
             return int(current) <= limit
         except redis.RedisError:
             if get_settings().is_production:

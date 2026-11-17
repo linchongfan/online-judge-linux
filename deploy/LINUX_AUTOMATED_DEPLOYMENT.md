@@ -83,7 +83,7 @@ sudoedit /etc/xinbaoyan/app.env
 sudoedit /etc/xinbaoyan/infra.env
 ```
 
-**纯 IP 模式说明**：Let's Encrypt 等受信任 CA 不为裸 IP 签发证书，因此 IP 模式使用 HTTP，`bootstrap.sh` 会自动把 `REFRESH_COOKIE_SECURE` 设为 `false` 并把 CORS 来源改为 `http://`，登录和会话在明文传输下可用，但**不适合生产长期使用**；有了域名后重新执行 `bootstrap.sh 域名` 即可切换到 HTTPS。默认 HTTP 端口为 80，被其他服务（如 1Panel OpenResty）占用时，可加第二个参数换端口，例如 `sudo bash deploy/linux/bootstrap.sh 1.2.3.4 9898`，之后通过 `http://IP:9898` 访问。
+**纯 IP 模式说明**：Let's Encrypt 等受信任 CA 不为裸 IP 签发证书，因此 IP 模式使用 HTTP。`configure.sh` 会自动把 `REFRESH_COOKIE_SECURE` 设为 `false`、显式开启受控例外 `ALLOW_INSECURE_REFRESH_COOKIE=true`（其余生产安全校验全部保留）、把 refresh 会话有效期缩短为 1 天，并把 CORS 来源改为 `http://`。登录和会话在明文传输下可用，但**不适合生产长期使用**；有了域名后重新执行 `bootstrap.sh 域名` 即可切换到 HTTPS。默认 HTTP 端口为 80，被其他服务（如 1Panel OpenResty）占用时，可加第二个参数换端口，例如 `sudo bash deploy/linux/bootstrap.sh 1.2.3.4 9898`，之后通过 `http://IP:9898` 访问。
 
 图中 1Panel 已运行 MySQL `8.4.13` 和 Redis `8.10.3` 时，保持 `/etc/xinbaoyan/infra.env` 的 `INFRA_MODE=external`，不会再创建第二套容器。先在 1Panel 创建数据库 `xinbaoyan`、仅拥有该库权限的账号 `oj`，并确认 Redis 已设置密码。然后：
 
@@ -93,14 +93,9 @@ sudoedit /etc/xinbaoyan/infra.env
 
 外部模式会执行真实 `SELECT 1` 与 Redis `PING` 检查；备份使用本机 `mysqldump`，不依赖 1Panel 容器名称。
 
-发布完成并通过健康检查后，`deploy.sh` 会自动创建两个初始账号（幂等，已存在则跳过）：
+发布完成并通过健康检查后，`deploy.sh` 会自动创建两个初始账号（幂等，已存在则跳过）：管理员 `admin@123321`、测试用户 `test@123456`。
 
-| 角色 | 账号 | 密码 |
-| --- | --- | --- |
-| 管理员 | `admin@123321` | `admin@123321` |
-| 测试用户 | `test@123456` | `test@123456` |
-
-用户名规则已支持 `@`。首次登录后请立即修改密码；禁用自动创建可用 `sudo CREATE_DEFAULT_USERS=0 bash deploy/linux/deploy.sh`，覆盖默认值可在部署前设置 `DEFAULT_ADMIN_USERNAME`、`DEFAULT_ADMIN_PASSWORD`、`DEFAULT_ADMIN_EMAIL`、`DEFAULT_TEST_*` 环境变量。
+**密码不再硬编码**：未显式指定时，每个账号生成随机密码并写入仅 root 可读的 `/etc/xinbaoyan/initial-credentials`（0600；不可写时回退 `<STORAGE_ROOT>/initial-credentials`），部署输出会提示路径。首次登录后请立即修改密码并删除该文件。禁用自动创建可用 `sudo CREATE_DEFAULT_USERS=0 bash deploy/linux/deploy.sh`（改用 `scripts/create_admin.py` 交互式建号）；覆盖默认值可在部署前设置 `DEFAULT_ADMIN_USERNAME`、`DEFAULT_ADMIN_PASSWORD`、`DEFAULT_ADMIN_EMAIL`、`DEFAULT_TEST_*` 环境变量（显式指定的密码不会写入凭据文件）。
 
 ```bash
 # 构建、测试、连接现有基础设施、备份、迁移、发布并健康检查。

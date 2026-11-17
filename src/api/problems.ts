@@ -45,6 +45,17 @@ export function getProblemSolution(problemId: number): Promise<Solution> {
   return request<Solution>(`/problems/${problemId}/solution`)
 }
 
+export interface ProblemPosition {
+  index: number
+  total: number
+  prevId: number | null
+  nextId: number | null
+}
+
+export function getProblemPosition(problemId: number, contestId?: number): Promise<ProblemPosition> {
+  return request<ProblemPosition>(`/problems/${problemId}/position`, { query: { contest_id: contestId } })
+}
+
 export function runProblemSample(
   problemId: number,
   data: SampleRunCreate,

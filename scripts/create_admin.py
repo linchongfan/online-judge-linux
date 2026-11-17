@@ -4,6 +4,7 @@ import argparse
 import getpass
 import os
 
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 
 from app.core.security import USERNAME_PATTERN, hash_password
@@ -18,6 +19,10 @@ def main():
     args = parser.parse_args()
     if not USERNAME_PATTERN.fullmatch(args.username):
         raise SystemExit("Username must contain 3-32 letters, digits or underscores")
+    try:
+        args.email = TypeAdapter(EmailStr).validate_python(args.email)
+    except ValidationError as exc:
+        raise SystemExit(f"Invalid email address: {args.email!r}") from exc
     password = os.environ.get("ADMIN_INITIAL_PASSWORD") or getpass.getpass("Admin password (letters+digits, min 8): ")
     if len(password) < 8 or not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
         raise SystemExit("Password does not meet the policy")

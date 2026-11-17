@@ -65,6 +65,7 @@ from app.services.problems import (
     current_test_data,
     get_problem,
     problem_stats,
+    problem_stats_bulk,
     serialize_detail,
     upsert_problem,
 )
@@ -73,7 +74,7 @@ from app.services.test_data import TestDataService, TestDataValidationError
 router = APIRouter()
 
 
-def admin_problem_dict(db: Session, problem: Problem) -> dict:
+def admin_problem_dict(db: Session, problem: Problem, *, stats: dict | None = None) -> dict:
     version = current_test_data(db, problem.id)
     return {
         "id": problem.id,
@@ -87,7 +88,7 @@ def admin_problem_dict(db: Session, problem: Problem) -> dict:
         "test_case_count": version.test_case_count if version else 0,
         "test_data_size": version.uncompressed_size if version else 0,
         "solution_language_count": len(problem.solution.code_variants) if problem.solution else 0,
-        **problem_stats(db, problem.id, None),
+        **(stats if stats is not None else problem_stats(db, problem.id, None)),
         "updated_at": problem.updated_at,
     }
 
@@ -275,7 +276,8 @@ def admin_problems(
     items = db.scalars(
         select(Problem).where(*filters).order_by(Problem.id).offset((page - 1) * page_size).limit(page_size)
     ).all()
-    return make_page([admin_problem_dict(db, item) for item in items], total, page, page_size)
+    stats = problem_stats_bulk(db, [item.id for item in items], None)
+    return make_page([admin_problem_dict(db, item, stats=stats[item.id]) for item in items], total, page, page_size)
 
 
 @router.post("/problems", response_model=AdminProblemResponse, status_code=status.HTTP_201_CREATED)

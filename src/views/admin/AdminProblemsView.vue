@@ -27,7 +27,7 @@ import type {
   Language,
   ProblemStatus,
 } from '../../types'
-import { formatDateTime, formatNumber } from '../../utils/format'
+import { formatDateTime, formatNumber, languageLabels as solutionLanguageLabels, solutionLanguages } from '../../utils/format'
 
 interface SolutionForm {
   enabled: boolean
@@ -63,8 +63,6 @@ const versionStatusMap: Record<AdminTestDataVersion['status'], { label: string; 
   valid: { label: '校验通过', type: 'success' },
   invalid: { label: '校验失败', type: 'danger' },
 }
-const solutionLanguages: Language[] = ['cpp', 'c', 'java', 'python']
-const solutionLanguageLabels: Record<Language, string> = { cpp: 'C++', c: 'C', java: 'Java', python: 'Python3' }
 
 const rows = ref<AdminProblem[]>([])
 const keyword = ref('')
@@ -578,7 +576,7 @@ onUnmounted(() => {
 .problem-title { display: flex; flex-direction: column; gap: 8px; }
 .problem-title strong { color: var(--text-strong); font-weight: 600; font-size: 13px; }
 .problem-title > div { display: flex; gap: 5px; }
-.problem-title :deep(.el-tag) { --el-tag-bg-color: #f3f7fc; --el-tag-border-color: #dfe8f3; --el-tag-text-color: #607592; height: 20px; padding: 0 6px; border-radius: 3px; font-size: 9px; }
+.problem-title :deep(.el-tag) { --el-tag-bg-color: #f3f7fc; --el-tag-border-color: #dfe8f3; --el-tag-text-color: #607592; height: 20px; padding: 0 6px; border-radius: 3px; font-size: 10px; }
 .admin-table :deep(.difficulty) { border-radius: 4px; padding: 3px 7px; font-size: 11px; }
 .testpoint-cell { display: flex; flex-direction: column; gap: 5px; }
 .testpoint-cell strong { display: flex; align-items: center; gap: 5px; font-weight: 500; color: var(--text-secondary); }
@@ -621,7 +619,7 @@ onUnmounted(() => {
 .code-config { margin: 24px 0; }
 .config-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .config-label > span { color: var(--text-secondary); font-size: 12px; font-weight: 500; }
-.config-label small { color: var(--text-tertiary); font-size: 9px; }
+.config-label small { color: var(--text-tertiary); font-size: 10px; }
 .code-language-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 9px; }
 .code-language-tabs button { display: flex; align-items: center; justify-content: center; gap: 4px; border: 1px solid var(--border); border-radius: 5px; background: #fff; color: var(--text-secondary); padding: 7px 5px; font-size: 10px; cursor: pointer; }
 .code-language-tabs button.filled .el-icon { color: var(--success); }
@@ -638,7 +636,7 @@ onUnmounted(() => {
 .validation-errors > strong { display: block; margin-bottom: 8px; font-size: 12px; }
 .validation-errors > div { display: grid; grid-template-columns: minmax(120px, .8fr) 1.5fr auto; align-items: start; gap: 8px; padding: 8px 0; border-top: 1px solid #f3d9dc; font-size: 11px; }
 .validation-errors p { margin: 0; color: #8e3d47; }
-.validation-errors code { font-size: 9px; }
+.validation-errors code { font-size: 10px; }
 .version-table { width: 100%; margin-top: 12px; }
 .current-tag { margin-left: 4px; }
 .version-empty { padding: 22px; color: var(--text-secondary); font-size: 11px; }

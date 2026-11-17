@@ -28,7 +28,7 @@ const navItems = [
       </nav>
       <div class="sidebar-bottom">
         <button type="button" @click="router.push('/problems')"><el-icon><Back /></el-icon><span>返回用户端</span></button>
-        <div class="admin-user"><span class="avatar">管</span><div><strong>{{ session.profile?.nickname ?? '管理员' }}</strong><span>超级管理员</span></div></div>
+        <div class="admin-user"><span class="avatar">管</span><div><strong>{{ session.profile?.nickname ?? '管理员' }}</strong><span>管理员</span></div></div>
       </div>
     </aside>
     <section class="admin-content">
@@ -50,7 +50,7 @@ const navItems = [
 .admin-brand :deep(.brand-mark) { width: 40px; height: 40px; border-radius: 8px; box-shadow: 0 0 0 1px rgba(255,255,255,.14); }
 .admin-brand :deep(.brand-mark img) { width: 38px; height: 36px; }
 .admin-brand :deep(.brand-type strong) { font-size: 21px; letter-spacing: .5px; }
-.admin-brand :deep(.brand-type small) { color: rgba(224, 235, 251, .58); font-size: 8px; letter-spacing: .2px; white-space: nowrap; }
+.admin-brand :deep(.brand-type small) { color: rgba(224, 235, 251, .58); font-size: 10px; letter-spacing: .2px; white-space: nowrap; }
 .admin-edition { flex: none; padding-left: 10px; border-left: 1px solid rgba(255,255,255,.18); color: #c2d5ef; font-size: 11px; letter-spacing: 1px; white-space: nowrap; }
 .admin-nav { display: flex; flex-direction: column; gap: 4px; padding: 25px 14px; }
 .nav-section-label { color: #91a9ca; font-size: 11px; font-weight: 500; letter-spacing: 1px; padding: 0 12px 10px; }

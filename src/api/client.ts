@@ -182,7 +182,11 @@ async function performRefresh(): Promise<TokenResponse> {
     setAccessToken(tokenResponse.accessToken)
     return tokenResponse
   } catch (error) {
-    clearAccessToken()
+    // Only a rejected credential invalidates the token; a transient network
+    // failure must not drop it (the next request would needlessly 401).
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      clearAccessToken()
+    }
     throw error
   }
 }

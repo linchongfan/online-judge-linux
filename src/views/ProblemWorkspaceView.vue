@@ -5,13 +5,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import CodeEditor from '../components/CodeEditor.vue'
 import DifficultyTag from '../components/DifficultyTag.vue'
 import StatusTag from '../components/StatusTag.vue'
-import { getProblem, getProblemSolution, listProblems, runProblemSample } from '../api/problems'
+import { getProblem, getProblemPosition, getProblemSolution, runProblemSample, type ProblemPosition } from '../api/problems'
 import { createSubmission, listSubmissions } from '../api/submissions'
 import { getContest } from '../api/contests'
 import { ApiError } from '../api/client'
 import { session } from '../stores/session'
 import { useSubmissionPolling } from '../composables/useSubmissionPolling'
-import { createIdempotencyKey, formatDateTime, formatMemoryKb, formatRuntimeMs, judgeStatusMap } from '../utils/format'
+import { createIdempotencyKey, formatDateTime, formatMemoryKb, formatRuntimeMs, judgeStatusMap, languageLabels, solutionLanguages, sourceFileExtension } from '../utils/format'
 import type { Contest, JudgeStatus, Language, Problem, Solution, Submission } from '../types'
 
 const route = useRoute()
@@ -20,7 +20,11 @@ const language = ref<Language>('cpp')
 const code = ref('')
 const activeLeftTab = ref('description')
 const solutionLanguage = ref<Language>('cpp')
-const solutionLanguages: Language[] = ['cpp', 'c', 'java', 'python']
+// Declared before the first storageGet call: its catch branch writes
+// storageReady, and a TDZ reference there would crash the whole view when
+// localStorage is unavailable (private mode / disabled storage).
+const storageReady = ref(true)
+let warnedStorage = false
 const storedPaneWidth = Number(storageGet('xinbaoyan-pane-width'))
 const leftPaneWidth = ref(storedPaneWidth >= 28 && storedPaneWidth <= 70 ? storedPaneWidth : 45)
 const workspaceBody = ref<HTMLElement>()
@@ -30,8 +34,6 @@ const consoleOpen = ref(true)
 const running = ref(false)
 const judging = ref<JudgeStatus | 'idle' | 'done'>('idle')
 const saved = ref(true)
-const storageReady = ref(true)
-let warnedStorage = false
 function storageGet(key: string): string | null {
   try { return localStorage.getItem(key) } catch { storageReady.value = false; return null }
 }
@@ -49,25 +51,24 @@ const problem = ref<Problem>({ id: 0, title: '题目加载中', difficulty: '简
 const solution = ref<Solution | null>(null)
 const solutionError = ref('')
 const problemSubmissions = ref<Submission[]>([])
+const problemSubmissionsError = ref('')
 const contest = ref<Contest | null>(null)
-const globalProblemIds = ref<number[]>([])
-const problemIds = computed(() => contest.value ? contest.value.problems.map(item => item.problemId) : globalProblemIds.value)
+const position = ref<ProblemPosition | null>(null)
 const currentSubmission = ref<Submission | null>(null)
 const activeSubmissionId = ref<string | null>(null)
 const operation = ref<'sample' | 'submit'>('submit')
-const languageLabels: Record<Language, string> = { cpp: 'C++', c: 'C', java: 'Java', python: 'Python3' }
+const pollIntervalMs = ref(800)
 let saveTimer: ReturnType<typeof setTimeout> | undefined
 let loadGeneration = 0
 
 const solutionCode = computed(() => solution.value?.codes.find(item => item.language === solutionLanguage.value)?.code ?? '')
 const solutionMissing = computed(() => solution.value !== null && !solutionCode.value)
-const problemIndex = computed(() => problemIds.value.indexOf(problem.value.id))
 const finalStatus = computed<JudgeStatus>(() => currentSubmission.value?.status ?? 'AC')
 function judgeStatusText(status: JudgeStatus): string { return judgeStatusMap[status].label }
 const busy = computed(() => running.value || judging.value === 'PENDING' || judging.value === 'JUDGING')
 const polling = useSubmissionPolling(activeSubmissionId, {
   immediate: false,
-  pollIntervalMs: 800,
+  pollIntervalMs,
   onUpdate: item => {
     currentSubmission.value = item
     if (operation.value === 'sample') {
@@ -211,10 +212,11 @@ function requireLogin(): boolean {
   void router.push({ path: '/login', query: { redirect: route.fullPath } })
   return false
 }
-function newSubmission(operationName: 'sample' | 'submit', accepted: { id: string; status: JudgeStatus }) {
+function newSubmission(operationName: 'sample' | 'submit', accepted: { id: string; status: JudgeStatus; pollAfterMs?: number }) {
   operation.value = operationName
   activeSubmissionId.value = accepted.id
   judging.value = accepted.status
+  pollIntervalMs.value = accepted.pollAfterMs && accepted.pollAfterMs >= 100 ? accepted.pollAfterMs : 800
   polling.start()
 }
 async function runSample() {
@@ -264,9 +266,18 @@ function changeLeftTab(tab: string) {
   nextTick(() => document.querySelector('.problem-pane .description-scroll')?.scrollTo({ top: 0 }))
 }
 function goToProblem(offset: number) {
-  if (!problemIds.value.length || problemIndex.value < 0) return
-  const next = problemIds.value[(problemIndex.value + offset + problemIds.value.length) % problemIds.value.length]
-  void router.push({ path: `/problems/${next}`, query: contest.value ? { contest: contest.value.id } : {} })
+  const target = offset < 0 ? position.value?.prevId : position.value?.nextId
+  if (target === null || target === undefined) return
+  void router.push({ path: `/problems/${target}`, query: contest.value ? { contest: contest.value.id } : {} })
+}
+async function loadPosition() {
+  const generation = loadGeneration
+  try {
+    const result = await getProblemPosition(problem.value.id, contest.value?.id)
+    if (generation === loadGeneration) position.value = result
+  } catch {
+    if (generation === loadGeneration) position.value = null
+  }
 }
 function showHistoryResult(item: Submission) {
   currentSubmission.value = item
@@ -290,8 +301,20 @@ async function loadSolution() {
   }
 }
 async function loadProblemSubmissions() {
-  if (!session.loggedIn || !problem.value.id) { problemSubmissions.value = []; return }
-  try { problemSubmissions.value = (await listSubmissions({ problemId: problem.value.id, page: 1, pageSize: 6 })).items } catch { problemSubmissions.value = [] }
+  if (!session.loggedIn || !problem.value.id) { problemSubmissions.value = []; problemSubmissionsError.value = ''; return }
+  const generation = loadGeneration
+  problemSubmissionsError.value = ''
+  try {
+    const items = (await listSubmissions({ problemId: problem.value.id, page: 1, pageSize: 6 })).items
+    if (generation === loadGeneration) problemSubmissions.value = items
+  } catch (error) {
+    // Distinguish "load failed" from "no submissions" instead of silently
+    // showing an empty history.
+    if (generation === loadGeneration) {
+      problemSubmissions.value = []
+      problemSubmissionsError.value = error instanceof ApiError ? error.message : '提交记录加载失败'
+    }
+  }
 }
 async function loadWorkspace() {
   const generation = ++loadGeneration
@@ -314,6 +337,7 @@ async function loadWorkspace() {
     problem.value = problemData
     contest.value = contestData && contestData.status === 'ongoing' ? contestData : null
     loadDraft()
+    void loadPosition()
     void loadProblemSubmissions()
     if (activeLeftTab.value === 'solution') void loadSolution()
   } catch (error) {
@@ -331,16 +355,19 @@ watch(code, () => {
 watch(() => [route.params.id, route.query.contest], loadWorkspace)
 watch(() => polling.error.value, (error) => {
   if (!error) return
-  // Permanent polling failure (network/auth/not-found): release the UI so the
-  // user can retry or navigate away instead of waiting forever.
-  running.value = false
-  judging.value = 'idle'
-  polling.stop()
-  ElMessage.error(error instanceof ApiError ? error.message : '判题状态获取失败，请稍后重试')
+  // Only permanent failures (auth/not-found) release the UI. Transient
+  // network errors keep the judging state: the composable backs off and
+  // retries, and the judge is still running server-side — stopping here
+  // would lose the result of a perfectly good submission.
+  if (error instanceof ApiError && (error.status === 401 || error.status === 403 || error.status === 404)) {
+    running.value = false
+    judging.value = 'idle'
+    polling.stop()
+    ElMessage.error(error.message)
+  }
 })
 onMounted(() => {
   void loadWorkspace()
-  void listProblems({ page: 1, pageSize: 100 }).then(data => { globalProblemIds.value = data.items.map(item => item.id) }).catch(() => {})
   window.addEventListener('resize', clampConsoleToViewport)
   void nextTick(clampConsoleToViewport)
 })
@@ -348,6 +375,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', clampConsoleToViewport)
   polling.stop()
   if (saveTimer) clearTimeout(saveTimer)
+  if (consoleFrame) cancelAnimationFrame(consoleFrame)
   if (problem.value.id) storageSet(draftKey(), code.value)
 })
 </script>
@@ -360,7 +388,7 @@ onBeforeUnmount(() => {
         <span v-if="contest" class="contest-label">{{ contest.title }}<i>/</i></span>
         <strong>{{ problem.id }}. {{ problem.title }}</strong><DifficultyTag :difficulty="problem.difficulty" />
       </div>
-      <div class="problem-switcher"><el-button text :icon="'ArrowLeft'" aria-label="上一题" @click="goToProblem(-1)" /><span>{{ problemIndex + 1 }} / {{ problemIds.length }}</span><el-button text :icon="'ArrowRight'" aria-label="下一题" @click="goToProblem(1)" /></div>
+      <div class="problem-switcher"><el-button text :icon="'ArrowLeft'" aria-label="上一题" :disabled="!position?.prevId" @click="goToProblem(-1)" /><span>{{ position ? `${position.index + 1} / ${position.total}` : '…' }}</span><el-button text :icon="'ArrowRight'" aria-label="下一题" :disabled="!position?.nextId" @click="goToProblem(1)" /></div>
       <span class="prototype-note">真实判题服务</span>
     </div>
 
@@ -405,7 +433,7 @@ onBeforeUnmount(() => {
           <section class="solution-section reference-section">
             <div class="reference-heading"><h2><span>03</span>参考实现</h2><button :disabled="solutionMissing" @click="copyText(solutionCode, `${languageLabels[solutionLanguage]} 代码已复制`)"><el-icon><CopyDocument /></el-icon>复制</button></div>
             <div class="solution-language-tabs" role="tablist" aria-label="参考代码语言"><button v-for="lang in solutionLanguages" :key="lang" role="tab" :aria-selected="solutionLanguage === lang" :class="{ active: solutionLanguage === lang }" @click="solutionLanguage = lang">{{ languageLabels[lang] }}</button></div>
-            <div class="reference-code"><div class="code-caption"><span><i /><i /><i /></span><small>solution.{{ solutionLanguage === 'python' ? 'py' : solutionLanguage === 'java' ? 'java' : solutionLanguage === 'cpp' ? 'cpp' : 'c' }}</small></div><pre v-if="solutionMissing" class="solution-missing">该语言暂未提供参考实现，请切换其他语言。</pre><pre v-else><code>{{ solutionCode }}</code></pre></div>
+            <div class="reference-code"><div class="code-caption"><span><i /><i /><i /></span><small>solution.{{ sourceFileExtension(solutionLanguage) }}</small></div><pre v-if="solutionMissing" class="solution-missing">该语言暂未提供参考实现，请切换其他语言。</pre><pre v-else><code>{{ solutionCode }}</code></pre></div>
             <el-button type="primary" class="use-solution" :disabled="solutionMissing" @click="useSolution"><el-icon><EditPen /></el-icon>将 {{ languageLabels[solutionLanguage] }} 代码放入编辑器</el-button>
           </section>
           <div class="solution-note"><el-icon><InfoFilled /></el-icon><p>参考实现用于理解算法思路。提交前请结合题目输入输出格式补齐代码，并尝试自己说明每一步的原因。</p></div>
@@ -416,7 +444,8 @@ onBeforeUnmount(() => {
           <button v-for="item in problemSubmissions" :key="item.id" class="history-item" @click="showHistoryResult(item)">
             <StatusTag :status="item.status" /><div><strong>#{{ item.id }}</strong><span>{{ formatDateTime(item.createdAt) }} · {{ languageLabels[item.language] }}</span></div><div class="history-metrics"><span>{{ formatRuntimeMs(item.runtimeMs) }}</span><small>{{ formatMemoryKb(item.memoryKb) }}</small></div>
           </button>
-          <div v-if="!problemSubmissions.length" class="empty-state"><div class="empty-icon"><el-icon :size="25"><Document /></el-icon></div><h3>还没有提交记录</h3><p>完成代码后，点击右下角提交</p></div>
+          <div v-if="problemSubmissionsError" class="empty-state"><h3>提交记录加载失败</h3><p>{{ problemSubmissionsError }}</p><el-button @click="loadProblemSubmissions">重新加载</el-button></div>
+          <div v-else-if="!problemSubmissions.length" class="empty-state"><div class="empty-icon"><el-icon :size="25"><Document /></el-icon></div><h3>还没有提交记录</h3><p>完成代码后，点击右下角提交</p></div>
         </div>
       </section>
 
@@ -426,7 +455,7 @@ onBeforeUnmount(() => {
           <el-select :model-value="language" size="small" @change="changeLanguage">
             <el-option v-for="(label, key) in languageLabels" :key="key" :label="label" :value="key" />
           </el-select>
-          <span class="editor-file mono">main.{{ language === 'python' ? 'py' : language === 'java' ? 'java' : language === 'cpp' ? 'cpp' : 'c' }}</span>
+          <span class="editor-file mono">main.{{ sourceFileExtension(language) }}</span>
           <div class="editor-actions"><span class="save-state"><el-icon><CircleCheck /></el-icon>{{ !storageReady ? '本地存储不可用' : saved ? '已保存到本机' : '正在保存…' }}</span><el-button text size="small" @click="resetCode"><el-icon><RefreshLeft /></el-icon>重置</el-button></div>
         </div>
         <div class="monaco-wrap"><CodeEditor v-model="code" :language="language" /></div>
@@ -473,28 +502,28 @@ onBeforeUnmount(() => {
 .problem-description { margin-top: 24px; }.problem-description p, .io-description p { color: #525563; font-size: 13px; line-height: 1.9; margin: 0 0 12px; }.description-scroll h3 { color: var(--text-strong); font-size: 13px; margin: 22px 0 9px; }.io-description { margin-top: 20px; }
 .sample-block { margin-top: 20px; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; background: #fafafd; }.sample-title { display: flex; align-items: center; justify-content: space-between; padding: 0 13px; border-bottom: 1px solid var(--border); background: #fff; }.sample-title h3 { margin: 11px 0; }.sample-title button { display: flex; gap: 4px; align-items: center; border: 0; background: transparent; color: var(--text-tertiary); font-size: 10px; cursor: pointer; }.sample-title button:hover { color: var(--primary); }.sample-row { display: grid; grid-template-columns: 40px 1fr; gap: 10px; padding: 10px 13px; }.sample-row > span { color: var(--text-tertiary); font-size: 10px; padding-top: 2px; }.sample-row pre { margin: 0; white-space: pre-wrap; color: #424454; font: 11px/1.7 'JetBrains Mono', monospace; }.sample-explanation { margin: 0; padding: 10px 13px; border-top: 1px dashed var(--border); color: var(--text-secondary); font-size: 11px; line-height: 1.7; }
 .constraints ul { margin: 0; padding-left: 18px; }.constraints li { color: var(--text-secondary); font: 11px/2 'JetBrains Mono', 'Microsoft YaHei', monospace; }.problem-stats { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 28px; background: var(--surface-soft); border-radius: 9px; padding: 14px; }.problem-stats div { display: flex; flex-direction: column; align-items: center; gap: 4px; border-right: 1px solid var(--border); }.problem-stats div:last-child { border: 0; }.problem-stats strong { font-size: 14px; }.problem-stats span { color: var(--text-tertiary); font-size: 10px; }
-.submission-history { padding-top: 20px; }.history-item { display: flex; align-items: center; width: 100%; border: 1px solid var(--border); background: #fff; border-radius: 9px; padding: 13px; margin-bottom: 9px; text-align: left; cursor: pointer; }.history-item:hover { border-color: #cfc9f6; background: #fbfaff; }.history-item > .judge-status { width: 108px; }.history-item > div:nth-child(2) { display: flex; flex-direction: column; gap: 4px; }.history-item strong { font-size: 11px; }.history-item span { font-size: 10px; color: var(--text-tertiary); }.history-metrics { margin-left: auto; text-align: right; display: flex; flex-direction: column; gap: 4px; }.history-metrics small { color: var(--text-tertiary); font-size: 9px; }
+.submission-history { padding-top: 20px; }.history-item { display: flex; align-items: center; width: 100%; border: 1px solid var(--border); background: #fff; border-radius: 9px; padding: 13px; margin-bottom: 9px; text-align: left; cursor: pointer; }.history-item:hover { border-color: #cfc9f6; background: #fbfaff; }.history-item > .judge-status { width: 108px; }.history-item > div:nth-child(2) { display: flex; flex-direction: column; gap: 4px; }.history-item strong { font-size: 11px; }.history-item span { font-size: 10px; color: var(--text-tertiary); }.history-metrics { margin-left: auto; text-align: right; display: flex; flex-direction: column; gap: 4px; }.history-metrics small { color: var(--text-tertiary); font-size: 10px; }
 .solution-pane { background: #fbfdff; }
 .solution-intro { padding: 3px 0 22px; border-bottom: 1px solid var(--border); }
 .solution-brand { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .solution-brand > span { display: inline-flex; align-items: center; gap: 5px; color: var(--primary); font-size: 11px; font-weight: 600; }
-.solution-brand small { color: var(--text-tertiary); font-size: 9px; }
+.solution-brand small { color: var(--text-tertiary); font-size: 10px; }
 .solution-intro h1 { margin: 15px 0 12px; color: var(--text-strong); font-size: 22px; line-height: 1.55; letter-spacing: -.5px; }
 .solution-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.solution-tags > span { padding: 3px 7px; border-radius: 4px; background: #edf3fa; color: var(--text-secondary); font-size: 9px; }
+.solution-tags > span { padding: 3px 7px; border-radius: 4px; background: #edf3fa; color: var(--text-secondary); font-size: 10px; }
 .solution-intro > p { margin: 17px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.95; }
 .solution-section { padding: 24px 0 0; }
 .solution-section h2, .reference-heading h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; color: var(--text-strong); font-size: 14px; }
 .solution-section h2 > span { color: var(--primary); font: 600 10px 'Manrope', sans-serif; }
 .solution-steps { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .solution-steps li { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #e3ecf6; border-radius: 7px; background: #fff; }
-.solution-steps li > span { width: 21px; height: 21px; display: grid; place-items: center; flex: none; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 9px; font-weight: 700; }
+.solution-steps li > span { width: 21px; height: 21px; display: grid; place-items: center; flex: none; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 10px; font-weight: 700; }
 .solution-steps p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
 .complexity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .complexity-grid > div { display: flex; flex-direction: column; gap: 6px; padding: 14px; border-left: 3px solid var(--primary); background: #edf4ff; }
 .complexity-grid span { color: var(--text-secondary); font-size: 10px; }
 .complexity-grid strong { color: #123f87; font: 700 17px 'JetBrains Mono', monospace; }
-.complexity-grid small { color: var(--text-tertiary); font-size: 8px; line-height: 1.5; }
+.complexity-grid small { color: var(--text-tertiary); font-size: 10px; line-height: 1.5; }
 .reference-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .reference-heading h2 { margin: 0; }
 .reference-heading > button { display: flex; align-items: center; gap: 4px; border: 0; background: none; color: var(--text-tertiary); font-size: 10px; cursor: pointer; }
@@ -515,7 +544,7 @@ onBeforeUnmount(() => {
 .solution-note .el-icon { flex: none; margin-top: 3px; }
 .solution-note p { margin: 0; font-size: 10px; line-height: 1.75; }
 .editor-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #101d30; min-height: 0; overflow: hidden; }
-.editor-toolbar { height: 48px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 14px; background: #162a43; border-bottom: 1px solid #29415e; }.editor-toolbar .el-select { width: 115px; }.editor-toolbar :deep(.el-select__wrapper) { background: #2b2e3c; box-shadow: 0 0 0 1px #3a3d4c inset; color: #d8dbea; }.editor-toolbar :deep(.el-select__selected-item), .editor-toolbar :deep(.el-select__placeholder) { color: #d8dbea; font-size: 11px; }.editor-file { color: #797f98; font-size: 10px; }.editor-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }.save-state { display: flex; align-items: center; gap: 4px; color: #6f768e; font-size: 9px; }.editor-actions .el-button { color: #9399b0; }
+.editor-toolbar { height: 48px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 14px; background: #162a43; border-bottom: 1px solid #29415e; }.editor-toolbar .el-select { width: 115px; }.editor-toolbar :deep(.el-select__wrapper) { background: #2b2e3c; box-shadow: 0 0 0 1px #3a3d4c inset; color: #d8dbea; }.editor-toolbar :deep(.el-select__selected-item), .editor-toolbar :deep(.el-select__placeholder) { color: #d8dbea; font-size: 11px; }.editor-file { color: #797f98; font-size: 10px; }.editor-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }.save-state { display: flex; align-items: center; gap: 4px; color: #6f768e; font-size: 10px; }.editor-actions .el-button { color: #9399b0; }
 .monaco-wrap { flex: 1; min-height: 180px; overflow: hidden; }
 .console-resizer { flex: none; height: 8px; display: grid; place-items: center; cursor: row-resize; touch-action: none; background: #162a43; border-top: 1px solid #29415e; }
 .console-resizer > span { width: 34px; height: 0; border-top: 2px dotted #55708f; }
@@ -523,12 +552,12 @@ onBeforeUnmount(() => {
 .console-resizer:hover > span, .console-resizer:focus-visible > span, .editor-pane.console-resizing .console-resizer > span { border-color: #8fb8ff; }
 .editor-pane.console-resizing .monaco-wrap, .editor-pane.console-resizing .console-panel { pointer-events: none; }
 .console-panel { flex: none; height: clamp(200px, 24vh, 270px); background: #12243b; border-top: 1px solid #29415e; transition: height .2s; }.console-panel.collapsed { height: 39px; }.console-header { height: 39px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; }.console-header > div { display: flex; height: 100%; gap: 20px; }.console-header button { border: 0; background: none; color: #7f859c; font-size: 10px; cursor: pointer; position: relative; }.console-header button.active { color: #d9dced; }.console-header button.active::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: #9184ef; }.console-toggle { display: grid; place-items: center; width: 25px; height: 25px; }.result-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--success); margin-left: 5px; }.result-dot.wa { background: var(--danger); }
-.console-content { height: calc(100% - 39px); overflow-y: auto; padding: 8px 17px 12px; color: #c7cbda; }.console-loading, .console-placeholder { height: 100%; display: flex; align-items: center; justify-content: center; gap: 9px; color: #858ba2; font-size: 11px; }.console-loading .el-icon { color: #a597ff; font-size: 18px; }.run-success { display: flex; align-items: center; gap: 7px; margin: 3px 0 9px; }.run-success .el-icon { color: #60c49f; }.run-success strong { font-size: 11px; color: #a7dbc8; }.run-success span { margin-left: auto; color: #6f758b; font-size: 9px; }.testcase-row { display: grid; grid-template-columns: 80px 1fr 35px 45px; gap: 8px; align-items: center; padding: 7px 10px; border-radius: 5px; background: #1b304b; margin-top: 5px; font-size: 10px; }.testcase-row > span { display: flex; align-items: center; gap: 6px; color: #a9aec0; }.testcase-row i { width: 4px; height: 4px; border-radius: 50%; background: #57bd98; }.testcase-row pre { margin: 0; color: #8e95ab; font: 9px 'JetBrains Mono', monospace; white-space: pre-wrap; }.testcase-row strong { color: #61c29e; font-size: 9px; }.testcase-row small { color: #6f7589; text-align: right; font-size: 9px; }
+.console-content { height: calc(100% - 39px); overflow-y: auto; padding: 8px 17px 12px; color: #c7cbda; }.console-loading, .console-placeholder { height: 100%; display: flex; align-items: center; justify-content: center; gap: 9px; color: #858ba2; font-size: 11px; }.console-loading .el-icon { color: #a597ff; font-size: 18px; }.run-success { display: flex; align-items: center; gap: 7px; margin: 3px 0 9px; }.run-success .el-icon { color: #60c49f; }.run-success strong { font-size: 11px; color: #a7dbc8; }.run-success span { margin-left: auto; color: #6f758b; font-size: 10px; }.testcase-row { display: grid; grid-template-columns: 80px 1fr 35px 45px; gap: 8px; align-items: center; padding: 7px 10px; border-radius: 5px; background: #1b304b; margin-top: 5px; font-size: 10px; }.testcase-row > span { display: flex; align-items: center; gap: 6px; color: #a9aec0; }.testcase-row i { width: 4px; height: 4px; border-radius: 50%; background: #57bd98; }.testcase-row pre { margin: 0; color: #8e95ab; font: 9px 'JetBrains Mono', monospace; white-space: pre-wrap; }.testcase-row strong { color: #61c29e; font-size: 10px; }.testcase-row small { color: #6f7589; text-align: right; font-size: 10px; }
 .run-result.failed .run-success strong, .run-result.failed .testcase-row strong { color: #ef9aa3; }
 .run-result.failed .testcase-row i { background: #e87982; }
-.judging-progress { padding-top: 20px; }.judging-line { display: flex; align-items: center; gap: 12px; }.judging-line > .el-icon { font-size: 25px; color: #a99cf8; }.judging-line > div { display: flex; flex-direction: column; gap: 6px; }.judging-line strong { font-size: 12px; }.judging-line span { color: #7f8599; font-size: 9px; }.judging-line > .judge-status { margin-left: auto; }.judging-progress .el-progress { margin-top: 20px; }
-.result-summary { display: flex; align-items: center; gap: 10px; }.result-icon { font-size: 29px; color: #5cc39c; }.wrong .result-icon { color: #e87982; }.result-summary > div:nth-child(2) { display: flex; flex-direction: column; gap: 5px; }.result-summary > div:nth-child(2) > span { color: #81879b; font-size: 9px; }.result-metrics { display: flex; gap: 25px; margin-left: auto; }.result-metrics > span { display: flex; flex-direction: column; gap: 5px; }.result-metrics small { color: #777e93; font-size: 9px; }.result-metrics strong { font-size: 12px; }.final-result > p { display: flex; align-items: center; gap: 5px; background: #342a35; color: #c3939a; font-size: 9px; padding: 8px 10px; border-radius: 5px; margin: 12px 0 0; }
-.editor-footer { min-height: 55px; flex: none; background: #162a43; border-top: 1px solid #29415e; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 15px; }.editor-footer > span { display: flex; align-items: center; gap: 5px; color: #70768c; font-size: 9px; }.editor-footer > div { display: flex; gap: 8px; }.editor-footer .el-button { font-size: 11px; }.editor-footer .el-button:not(.el-button--primary) { background: #303341; color: #c2c6d5; border-color: #3d4050; }
+.judging-progress { padding-top: 20px; }.judging-line { display: flex; align-items: center; gap: 12px; }.judging-line > .el-icon { font-size: 25px; color: #a99cf8; }.judging-line > div { display: flex; flex-direction: column; gap: 6px; }.judging-line strong { font-size: 12px; }.judging-line span { color: #7f8599; font-size: 10px; }.judging-line > .judge-status { margin-left: auto; }.judging-progress .el-progress { margin-top: 20px; }
+.result-summary { display: flex; align-items: center; gap: 10px; }.result-icon { font-size: 29px; color: #5cc39c; }.wrong .result-icon { color: #e87982; }.result-summary > div:nth-child(2) { display: flex; flex-direction: column; gap: 5px; }.result-summary > div:nth-child(2) > span { color: #81879b; font-size: 10px; }.result-metrics { display: flex; gap: 25px; margin-left: auto; }.result-metrics > span { display: flex; flex-direction: column; gap: 5px; }.result-metrics small { color: #777e93; font-size: 10px; }.result-metrics strong { font-size: 12px; }.final-result > p { display: flex; align-items: center; gap: 5px; background: #342a35; color: #c3939a; font-size: 10px; padding: 8px 10px; border-radius: 5px; margin: 12px 0 0; }
+.editor-footer { min-height: 55px; flex: none; background: #162a43; border-top: 1px solid #29415e; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 15px; }.editor-footer > span { display: flex; align-items: center; gap: 5px; color: #70768c; font-size: 10px; }.editor-footer > div { display: flex; gap: 8px; }.editor-footer .el-button { font-size: 11px; }.editor-footer .el-button:not(.el-button--primary) { background: #303341; color: #c2c6d5; border-color: #3d4050; }
 @media (max-width: 1000px) { .workspace-topbar > .prototype-note { display: none; }.problem-pane { min-width: 0; }.description-scroll { padding: 20px; }.run-success span { display: none; }.save-state { display: none; }.editor-footer > span { display: none; }.editor-footer { justify-content: flex-end; } }
 @media (max-width: 760px) { .workspace-shell { height: auto; min-height: calc(100vh - 120px); }.workspace-topbar { padding: 0 12px; }.workspace-breadcrumb :deep(.difficulty), .contest-label, .problem-switcher { display: none; }.workspace-body { flex-direction: column; }.pane-resizer { display: none; }.problem-pane { width: 100%; min-width: 0; border-right: 0; max-height: none; }.description-scroll { overflow: visible; padding: 22px 18px; }.editor-pane { min-height: 690px; }.monaco-wrap { min-height: 400px; }.console-panel { height: 230px; }.editor-footer { position: sticky; bottom: 0; z-index: 10; }.problem-heading h1 { font-size: 22px; }.console-resizer { display: none; } }
 </style>

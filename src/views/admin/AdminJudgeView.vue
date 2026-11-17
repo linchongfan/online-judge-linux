@@ -14,7 +14,7 @@ import {
   updateAdminJudgeWorker,
 } from '../../api/admin'
 import type { AdminAbnormalJudgeTask, AdminJudgeSettings, JudgeWorker, Language } from '../../types'
-import { formatDateTime, formatNumber } from '../../utils/format'
+import { formatDateTime, formatNumber, languageLabels } from '../../utils/format'
 
 const workers = ref<JudgeWorker[]>([])
 const tasks = ref<AdminAbnormalJudgeTask[]>([])
@@ -48,7 +48,6 @@ const workerStatus = {
   busy: { label: '忙碌', tone: 'warning' },
   offline: { label: '已下线', tone: 'neutral' },
 }
-const languageLabels: Record<Language, string> = { cpp: 'C++', c: 'C', java: 'Java', python: 'Python3' }
 
 function resourceColor(value: number | null, offline = false) {
   if (value === null || offline) return '#b8c2ce'
@@ -285,7 +284,7 @@ onUnmounted(() => loadController?.abort())
 .offline .worker-icon { color: #71849a; background: #e8edf3; }
 .worker-header > div > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .worker-header strong { color: var(--text-strong); font-size: 12px; }
-.worker-header .mono + .mono { color: var(--text-secondary); font-size: 9px; }
+.worker-header .mono + .mono { color: var(--text-secondary); font-size: 10px; }
 .status-pill { border-radius: 5px; padding: 4px 8px; }
 .status-pill.success { color: var(--success); background: #eaf7f1; }
 .status-pill.warning { color: #a86218; background: var(--accent-soft); }
@@ -300,7 +299,7 @@ onUnmounted(() => loadController?.abort())
 .worker-meta > span + span { padding-left: 14px; border-left: 1px solid var(--border); }
 .worker-meta strong { color: var(--text-strong); font-size: 15px; font-weight: 600; }
 .worker-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 13px; }
-.worker-footer > span { display: flex; align-items: center; gap: 4px; color: var(--text-secondary); font-size: 9px; }
+.worker-footer > span { display: flex; align-items: center; gap: 4px; color: var(--text-secondary); font-size: 10px; }
 .worker-footer :deep(.el-button) { border-radius: 5px; flex: none; }
 .settings-card { margin-top: 24px; padding: 20px; border-radius: 8px; box-shadow: none; }
 .settings-card .section-heading { margin-bottom: 16px; }

@@ -114,7 +114,7 @@ class JudgeWorker:
         sensitive_values: tuple[str, ...],
     ) -> CaseResult:
         execution = self.runner.run(
-            adapter.run_command(work_dir),
+            adapter.run_command(work_dir, request.memory_limit_kb),
             cwd=work_dir,
             env=environment,
             stdin_data=case.input_data.encode("utf-8"),

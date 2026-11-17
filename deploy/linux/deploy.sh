@@ -40,16 +40,18 @@ mysql_ready() {
         MYSQL_PWD="$MYSQL_PASSWORD" mysql --host=127.0.0.1 --port=3306 --protocol=TCP \
             --user="$MYSQL_USER" --execute="SELECT 1" "$MYSQL_DATABASE" >/dev/null 2>&1
     else
-        "${COMPOSE[@]}" exec -T -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql \
-            mysqladmin ping -h 127.0.0.1 -uroot --silent >/dev/null 2>&1
+        # Password stays inside the container environment; docker CLI argv
+        # (-e KEY=VALUE) would expose it in `ps` to every local user.
+        "${COMPOSE[@]}" exec -T mysql sh -c \
+            'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin ping -h 127.0.0.1 -uroot --silent' >/dev/null 2>&1
     fi
 }
 
 redis_ready() {
     if [[ $INFRA_MODE == external ]]; then
-        [[ $(redis-cli -h 127.0.0.1 -p 6379 -a "$REDIS_PASSWORD" --no-auth-warning ping 2>/dev/null) == PONG ]]
+        [[ $(REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -h 127.0.0.1 -p 6379 ping 2>/dev/null) == PONG ]]
     else
-        [[ $("${COMPOSE[@]}" exec -T redis redis-cli -a "$REDIS_PASSWORD" ping 2>/dev/null) == PONG ]]
+        [[ $("${COMPOSE[@]}" exec -T redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping' 2>/dev/null) == PONG ]]
     fi
 }
 
@@ -156,6 +158,19 @@ fi
 systemctl enable --now xinbaoyan-backup.timer
 nginx -t
 systemctl reload nginx
+
+# Keep a bounded rollback window: each release carries a full .venv and
+# node_modules, so unbounded accumulation fills the disk.
+RELEASES_TO_KEEP=${RELEASES_TO_KEEP:-5}
+if [[ ! $RELEASES_TO_KEEP =~ ^[0-9]+$ ]] || [[ $RELEASES_TO_KEEP -lt 2 ]]; then
+    RELEASES_TO_KEEP=5
+fi
+ls -1dt "$BASE_DIR/releases/"*/ 2>/dev/null | tail -n +"$((RELEASES_TO_KEEP + 1))" | while IFS= read -r old_release; do
+    old_release=${old_release%/}
+    [[ $old_release == "$RELEASE_DIR" || $old_release == "$PREVIOUS_RELEASE" ]] && continue
+    rm -rf -- "$old_release"
+done
+
 PUBLIC_ORIGIN=$(grep -E '^CORS_ORIGINS=' "$APP_ENV" | cut -d= -f2- | cut -d, -f1)
 
 cat <<EOF

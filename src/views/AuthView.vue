@@ -6,7 +6,7 @@ import { Back, Check, Lock, Message, Right, User } from '@element-plus/icons-vue
 import AppLogo from '../components/AppLogo.vue'
 import { requestPasswordResetCode, resetPassword } from '../api/auth'
 import { ApiError } from '../api/client'
-import { login, register } from '../stores/session'
+import { initializeSession, login, register, session } from '../stores/session'
 import type { UserRole } from '../types'
 
 type AuthMode = 'login' | 'register' | 'forgot'
@@ -106,8 +106,35 @@ const forgotRules: FormRules = {
 
 function destinationFor(role: UserRole) {
   const redirect = route.query.redirect
-  if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) return redirect
+  // Reject protocol-relative (//host) and backslash (/\\host) variants that
+  // some browsers normalize into cross-origin URLs.
+  if (
+    typeof redirect === 'string'
+    && redirect.startsWith('/')
+    && !redirect.startsWith('//')
+    && !redirect.startsWith('/\\')
+  ) return redirect
   return role === 'admin' ? '/admin/dashboard' : '/problems'
+}
+
+const networkBlocked = computed(() => route.query.network === '1' && !session.loggedIn)
+const retryingConnection = ref(false)
+async function retryConnection() {
+  if (retryingConnection.value) return
+  retryingConnection.value = true
+  try {
+    const profile = await initializeSession()
+    if (profile) {
+      await router.replace(destinationFor(profile.role))
+    } else if (session.initialized) {
+      // Confirmed guest now: drop the network hint.
+      const query = { ...route.query }
+      delete query.network
+      await router.replace({ query })
+    }
+  } finally {
+    retryingConnection.value = false
+  }
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -289,6 +316,10 @@ onBeforeUnmount(() => {
             <p>{{ copy.description }}</p>
           </div>
 
+          <el-alert v-if="networkBlocked" type="warning" show-icon :closable="false" title="网络连接异常" description="暂时无法确认登录状态，请检查网络后重试。" style="margin-bottom: 16px">
+            <el-button size="small" :loading="retryingConnection" @click="retryConnection">重试连接</el-button>
+          </el-alert>
+
           <el-form v-if="mode === 'login'" ref="loginFormRef" :model="loginForm" :rules="loginRules" label-position="top" size="large" @submit.prevent="submitCurrent">
             <el-form-item label="用户名或邮箱" prop="account">
               <el-input v-model.trim="loginForm.account" placeholder="请输入用户名或邮箱" autocomplete="username" :prefix-icon="User" />
@@ -401,10 +432,10 @@ onBeforeUnmount(() => {
 .judge-result { display: flex; align-items: center; gap: 11px; padding: 12px 18px; background: #f0f9f5; border-top: 1px solid #dcefe6; }
 .result-check { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 50%; color: var(--success); background: #dcf1e7; }
 .judge-result div { display: flex; flex-direction: column; gap: 2px; }
-.judge-result strong { color: var(--success); font-size: 12px; }.judge-result div span { color: #6c897d; font-size: 9px; }.result-time { margin-left: auto; color: var(--text-tertiary); font-size: 10px; }
+.judge-result strong { color: var(--success); font-size: 12px; }.judge-result div span { color: #6c897d; font-size: 10px; }.result-time { margin-left: auto; color: var(--text-tertiary); font-size: 10px; }
 .study-rhythm { display: flex; align-items: center; justify-content: center; gap: 11px; margin-top: 24px; color: var(--text-secondary); font-size: 10px; }
 .study-rhythm span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.study-rhythm i { width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%; background: #fff; border: 1px solid #ccdef3; color: var(--primary); font-size: 9px; font-style: normal; font-weight: 600; }
+.study-rhythm i { width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%; background: #fff; border: 1px solid #ccdef3; color: var(--primary); font-size: 10px; font-style: normal; font-weight: 600; }
 .study-rhythm b { width: 24px; height: 1px; background: #bfd3ed; }
 .brand-footer { position: relative; z-index: 1; color: #7890ac; font-size: 10px; text-align: center; margin-top: 28px; }
 .form-panel { min-height: 100vh; padding: 40px 50px 22px; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #fff; }
@@ -445,8 +476,8 @@ onBeforeUnmount(() => {
   .brand-story { grid-template-columns: minmax(0, 1fr) 140px; gap: 16px; }
   .brand-story h1 { font-size: 34px; }
   .brand-story p { font-size: 12px; }
-  .owl-note { left: -25px; font-size: 9px; }
-  .study-topics { gap: 5px; }.study-topics span { padding: 4px 7px; font-size: 9px; }
+  .owl-note { left: -25px; font-size: 10px; }
+  .study-topics { gap: 5px; }.study-topics span { padding: 4px 7px; font-size: 10px; }
   .form-panel { padding-left: 40px; padding-right: 40px; }
 }
 @media (max-width: 900px) {

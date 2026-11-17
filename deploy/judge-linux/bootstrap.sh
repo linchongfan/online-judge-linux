@@ -19,17 +19,27 @@ if [[ ${ID:-} != ubuntu ]]; then
     exit 1
 fi
 case ${VERSION_ID:-} in
-    24.04|22.04) ;;
+    24.04)
+        # Noble ships Python 3.12 as the system interpreter.
+        PYTHON_PKGS=(python3 python3-venv python3-minimal)
+        PYTHON_BIN=python3
+        ;;
+    22.04)
+        # Jammy ships Python 3.10; the production baseline is 3.12, so install
+        # it explicitly from deadsnakes instead of silently judging with 3.10.
+        PYTHON_PKGS=(python3.12 python3.12-venv)
+        PYTHON_BIN=python3.12
+        if ! apt-cache show python3.12 >/dev/null 2>&1; then
+            apt-get install -y software-properties-common
+            add-apt-repository -y ppa:deadsnakes/ppa
+            apt-get update
+        fi
+        ;;
     *)
         echo "Supported baseline: Ubuntu 22.04/24.04 LTS only (got ${PRETTY_NAME:-unknown})." >&2
         exit 1
         ;;
 esac
-if [[ ${VERSION_ID} == 22.04 ]] && ! apt-cache show python3.12 >/dev/null 2>&1; then
-    apt-get install -y software-properties-common
-    add-apt-repository -y ppa:deadsnakes/ppa
-    apt-get update
-fi
 if [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
     echo "cgroup v2 unified hierarchy is required." >&2
     exit 1
@@ -44,16 +54,28 @@ done
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl debootstrap gcc-13 g++-13 git gzip \
-    libcap-dev libseccomp-dev locales openjdk-17-jdk-headless pkg-config python3 python3-venv \
-    python3-minimal rsync sudo tar util-linux wireguard-tools
+    build-essential ca-certificates curl gcc-13 g++-13 git gzip \
+    libcap-dev libseccomp-dev locales openjdk-17-jdk-headless pkg-config \
+    "${PYTHON_PKGS[@]}" rsync sudo tar ufw util-linux
 
-# Build the pinned IOI isolate from source. This deliberately avoids a floating distro package.
+# The judge host executes untrusted code: default-deny all inbound traffic
+# except SSH (allowed before enabling to avoid remote lockout).
+ufw allow OpenSSH
+ufw default deny incoming
+ufw default allow outgoing
+ufw --force enable
+
+# Build the pinned IOI isolate from source. This deliberately avoids a floating
+# distro package. isolate becomes the setuid-root trust anchor of the whole
+# sandbox, so the tarball integrity is verified against a pinned checksum
+# before anything is compiled or installed.
 ISOLATE_VERSION="2.0"
+ISOLATE_SHA256="17364f1b0f5d3d59fc917e1520f9a16d2b85bcb175b2615ab0dbfce09ab893f1"
 ISOLATE_SOURCE_DIR="$(mktemp -d)"
 trap 'rm -rf "$ISOLATE_SOURCE_DIR"' EXIT
 curl -fsSL "https://github.com/ioi/isolate/archive/refs/tags/v${ISOLATE_VERSION}.tar.gz" \
     -o "$ISOLATE_SOURCE_DIR/isolate.tar.gz"
+echo "${ISOLATE_SHA256}  $ISOLATE_SOURCE_DIR/isolate.tar.gz" | sha256sum -c -
 tar -xzf "$ISOLATE_SOURCE_DIR/isolate.tar.gz" -C "$ISOLATE_SOURCE_DIR"
 make -C "$ISOLATE_SOURCE_DIR/isolate-${ISOLATE_VERSION}" isolate
 install -m 4755 -o root -g root "$ISOLATE_SOURCE_DIR/isolate-${ISOLATE_VERSION}/isolate" /usr/bin/isolate
@@ -69,7 +91,16 @@ mkdir -p /opt/judge-toolchains/jdk17/bin /opt/judge-toolchains/python312/bin
 for tool in javac java jar; do
     ln -sfn "/usr/bin/${tool}" "/opt/judge-toolchains/jdk17/bin/${tool}"
 done
-ln -sfn "$(command -v python3)" /opt/judge-toolchains/python312/bin/python3
+# Point at the resolved real binary (e.g. /usr/bin/python3.12), not the
+# /usr/bin/python3 symlink: inside the sandbox rootfs /usr/bin/python3 links
+# back into the toolchain, and a symlink-to-symlink cycle would fail with
+# ELOOP. build-rootfs.sh copies this exact binary into the rootfs.
+PYTHON_REAL="$(readlink -f "$(command -v "$PYTHON_BIN")")"
+case "$PYTHON_REAL" in
+    */python3.12) ;;
+    *) echo "Expected a Python 3.12 interpreter, got: $PYTHON_REAL" >&2; exit 1 ;;
+esac
+ln -sfn "$PYTHON_REAL" /opt/judge-toolchains/python312/bin/python3
 
 python3 - <<'PY'
 import hashlib

@@ -1,4 +1,12 @@
-import type { ContestStatus, Difficulty, JudgeStatus } from '../types'
+import type { ContestStatus, Difficulty, JudgeStatus, Language } from '../types'
+
+export const languageLabels: Record<Language, string> = { cpp: 'C++', c: 'C', java: 'Java', python: 'Python3' }
+
+export const solutionLanguages: Language[] = ['cpp', 'c', 'java', 'python']
+
+export function sourceFileExtension(language: Language): string {
+  return language === 'python' ? 'py' : language === 'java' ? 'java' : language === 'cpp' ? 'cpp' : 'c'
+}
 
 export const judgeStatusMap: Record<JudgeStatus, { label: string; tone: string }> = {
   PENDING: { label: '等待判题', tone: 'pending' },

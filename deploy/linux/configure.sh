@@ -56,7 +56,12 @@ app_content = (source / "app.env.example").read_text(encoding="utf-8")
 for marker in sorted(values, key=len, reverse=True):
     app_content = app_content.replace(marker, values[marker])
 if is_ip:
+    # Bare IPs cannot obtain a trusted TLS certificate. Keep APP_ENV=production
+    # (all secret/CORS checks stay on) and opt into the single controlled
+    # exception for non-Secure cookies, with a short-lived refresh session.
     app_content = app_content.replace("REFRESH_COOKIE_SECURE=true", "REFRESH_COOKIE_SECURE=false")
+    app_content = app_content.replace("ALLOW_INSECURE_REFRESH_COOKIE=false", "ALLOW_INSECURE_REFRESH_COOKIE=true")
+    app_content = app_content.replace("REFRESH_TOKEN_EXPIRE_DAYS=30", "REFRESH_TOKEN_EXPIRE_DAYS=1")
     app_content = app_content.replace("CORS_ORIGINS=https://", "CORS_ORIGINS=http://")
 infra_content = (source / "infra.env.example").read_text(encoding="utf-8")
 for marker in sorted(values, key=len, reverse=True):

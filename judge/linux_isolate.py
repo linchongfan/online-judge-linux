@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -109,7 +110,11 @@ def _resolve_directory(env: Mapping[str, str], name: str, default: str) -> Path:
 
 
 class _OutputProxy:
-    """Combined stdout/stderr proxy with a hard byte limit and backpressure."""
+    """stdout/stderr proxy with a hard per-stream byte limit.
+
+    Each stream is capped independently; the supervising ProcessRunner
+    additionally enforces the combined stdout+stderr limit on every poll.
+    """
 
     def __init__(
         self,
@@ -210,7 +215,6 @@ class LinuxIsolateBackend(SandboxBackend):
         )
         self._states: dict[int, _SpawnState] = {}
         self._lock = threading.Lock()
-        self._next_box_id = os.getpid() % 1000
         self._mounts = self._build_mounts()
         self._meta_root.mkdir(parents=True, exist_ok=True)
         self._validate_static_configuration()
@@ -336,8 +340,7 @@ class LinuxIsolateBackend(SandboxBackend):
         effective_limits = limits or ProcessLimits(wall_timeout_ms=1000, output_limit_bytes=1)
         process_limit, disk_blocks, disk_inodes, memory_limit_kb = self._limits(argv, effective_limits)
         command = self._sandbox_argv(argv)
-        box_id = self._allocate_box_id()
-        self._init_box(box_id, disk_blocks, disk_inodes)
+        box_id = self._init_box_with_retry(disk_blocks, disk_inodes)
         state = _SpawnState(
             box_id=box_id,
             meta_dir=Path(tempfile.mkdtemp(prefix=f"spawn-{box_id}-", dir=self._meta_root)),
@@ -426,10 +429,26 @@ class LinuxIsolateBackend(SandboxBackend):
         return mounts[0]
 
     def _allocate_box_id(self) -> int:
-        with self._lock:
-            value = self._next_box_id
-            self._next_box_id = (self._next_box_id + 1) % 1000
-        return value
+        # Random ids avoid the pid-derived sequence that made every task in a
+        # process reuse the same box (a failed cleanup then poisoned the next
+        # task) and could collide across workers on one host.
+        return secrets.randbelow(1000)
+
+    def _init_box_with_retry(self, disk_blocks: int, disk_inodes: int) -> int:
+        last_error: SandboxConfigurationError | None = None
+        for _ in range(10):
+            box_id = self._allocate_box_id()
+            try:
+                self._init_box(box_id, disk_blocks, disk_inodes)
+                return box_id
+            except SandboxConfigurationError as exc:
+                last_error = exc
+                # Only retry when the box id is already taken (e.g. a stale
+                # box from a crashed run); any other init failure is fatal.
+                if "exists" not in str(exc).lower():
+                    raise
+        assert last_error is not None
+        raise last_error
 
     def terminate(self, process: subprocess.Popen[bytes]) -> None:
         state = self._state_for(process)

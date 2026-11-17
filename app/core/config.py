@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 30
     refresh_cookie_name: str = "oj_refresh"
     refresh_cookie_secure: bool = False
+    # Controlled exception for bare-IP deployments without TLS. Must be opted
+    # into explicitly; every other production check still applies.
+    allow_insecure_refresh_cookie: bool = False
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
     storage_root: Path = Path("./data")
     source_code_max_bytes: int = 65_536
@@ -48,8 +51,11 @@ class Settings(BaseSettings):
                 raise ValueError("生产环境必须配置独立的高强度 SECRET_KEY")
             if len(self.judge_result_secret) < 32 or self.judge_result_secret == self.secret_key:
                 raise ValueError("生产环境必须配置独立的高强度 JUDGE_RESULT_SECRET")
-            if not self.refresh_cookie_secure:
-                raise ValueError("生产环境必须启用 REFRESH_COOKIE_SECURE")
+            if not self.refresh_cookie_secure and not self.allow_insecure_refresh_cookie:
+                raise ValueError(
+                    "生产环境必须启用 REFRESH_COOKIE_SECURE"
+                    "（无 TLS 的 IP 部署需显式设置 ALLOW_INSECURE_REFRESH_COOKIE=true）"
+                )
             if "*" in self.cors_origin_list:
                 raise ValueError("生产环境不允许不受控的 CORS 通配符")
         return self

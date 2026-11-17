@@ -195,7 +195,7 @@ onMounted(() => {
 .streak-content > span { color: var(--text-tertiary); font-size: 10px; }
 .streak-content > strong { display: block; margin: 3px 0 10px; color: var(--text-strong); font-size: 16px; }
 .week-dots { display: flex; gap: 5px; }
-.week-dots i { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 50%; background: #edf1f6; color: #91a1b4; font-size: 9px; font-style: normal; }
+.week-dots i { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 50%; background: #edf1f6; color: #91a1b4; font-size: 10px; font-style: normal; }
 .week-dots i.done { background: var(--primary); color: #fff; }
 .week-dots i.done:last-child { background: var(--accent); }
 .library-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 22px; align-items: start; }
@@ -204,7 +204,7 @@ onMounted(() => {
 .practice-overview { padding: 20px; background: #fbfdff; border-bottom: 1px solid var(--border); }
 .rail-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rail-heading h2 { margin: 0; color: var(--text-strong); font-size: 13px; }
-.rail-heading > span { color: var(--text-tertiary); font-size: 9px; }
+.rail-heading > span { color: var(--text-tertiary); font-size: 10px; }
 .practice-count { display: flex; align-items: baseline; gap: 5px; margin: 14px 0 10px; }
 .practice-count strong { color: var(--primary); font-size: 29px; line-height: 1; }
 .practice-count span { color: var(--text-tertiary); font-size: 11px; }
@@ -220,7 +220,7 @@ onMounted(() => {
 .difficulty-filter button { display: flex; align-items: center; gap: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); padding: 8px 9px; font-size: 11px; text-align: left; cursor: pointer; }
 .difficulty-filter button:hover { background: var(--surface-soft); }
 .difficulty-filter button.active { color: var(--primary); background: var(--primary-soft); font-weight: 600; }
-.difficulty-filter button > span { margin-left: auto; color: var(--text-tertiary); font-size: 9px; }
+.difficulty-filter button > span { margin-left: auto; color: var(--text-tertiary); font-size: 10px; }
 .difficulty-filter i { width: 6px; height: 6px; border-radius: 50%; }.difficulty-filter i.easy { background: var(--success); }.difficulty-filter i.medium { background: var(--warning); }.difficulty-filter i.hard { background: var(--danger); }
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .tag-list button { display: flex; align-items: center; gap: 3px; border: 1px solid #e4ebf3; border-radius: 5px; background: #fff; color: var(--text-secondary); padding: 5px 7px; font-size: 10px; cursor: pointer; }
@@ -250,9 +250,9 @@ onMounted(() => {
 .problem-name > span { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .problem-name small { color: var(--text-tertiary); font-size: 10px; }
 .problem-name strong { color: var(--text-strong); font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.problem-name em { flex: none; padding: 2px 5px; border-radius: 4px; background: var(--accent-soft); color: #b16c20; font-size: 8px; font-style: normal; }
+.problem-name em { flex: none; padding: 2px 5px; border-radius: 4px; background: var(--accent-soft); color: #b16c20; font-size: 10px; font-style: normal; }
 .problem-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-.problem-tags i { padding: 3px 6px; border-radius: 4px; background: #f0f4f8; color: var(--text-secondary); font-size: 9px; font-style: normal; white-space: nowrap; }
+.problem-tags i { padding: 3px 6px; border-radius: 4px; background: #f0f4f8; color: var(--text-secondary); font-size: 10px; font-style: normal; white-space: nowrap; }
 .acceptance { display: flex; align-items: center; gap: 7px; }
 .acceptance strong { width: 39px; color: var(--text-secondary); font-size: 10px; font-weight: 500; }
 .acceptance > i { width: 38px; height: 3px; border-radius: 3px; background: #e5edf5; overflow: hidden; }

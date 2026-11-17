@@ -313,6 +313,7 @@ class Submission(Base):
         Index("ix_submission_user_created", "user_id", "created_at"),
         Index("ix_submission_problem_status", "problem_id", "status"),
         Index("ix_submission_contest_user", "contest_id", "user_id"),
+        Index("ix_submission_status", "status"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -348,6 +349,7 @@ class JudgeTask(Base):
     submission_id: Mapped[str] = mapped_column(ForeignKey("submission.id", ondelete="CASCADE"), index=True)
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[JudgeStatus] = mapped_column(Enum(JudgeStatus, native_enum=False), default=JudgeStatus.PENDING)
+    nonce: Mapped[str | None] = mapped_column(String(100))
     lease_owner: Mapped[str | None] = mapped_column(String(100))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

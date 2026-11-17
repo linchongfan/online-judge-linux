@@ -9,7 +9,7 @@ import { listSubmissions } from '../api/submissions'
 import { getContest } from '../api/contests'
 import { ApiError } from '../api/client'
 import { changePassword as changePasswordRequest, session, updateProfile } from '../stores/session'
-import { contestStatusMap, formatDate, formatDateTime, formatNumber, formatPenaltySeconds } from '../utils/format'
+import { contestStatusMap, formatDate, formatDateTime, formatNumber, formatPenaltySeconds, languageLabels } from '../utils/format'
 import type { Contest, Difficulty, Language, Submission, UserContestRecord, UserStats } from '../types'
 
 const router = useRouter()
@@ -26,7 +26,6 @@ const passwordForm = reactive({ currentPassword: '', newPassword: '', confirmPas
 const stats = ref<UserStats | null>(null)
 const recentList = ref<Submission[]>([])
 const contestRecords = ref<Array<UserContestRecord & { contest?: Contest }>>([])
-const languageLabels: Record<Language, string> = { cpp: 'C++', c: 'C', java: 'Java', python: 'Python3' }
 
 const profile = computed(() => session.profile)
 const progressGroups = computed(() => (stats.value?.difficultyProgress ?? []).map(group => ({
@@ -47,6 +46,7 @@ const passwordRules: FormRules = {
   newPassword: [{ required: true, trigger: 'blur', validator: (_rule, value, callback) => {
     if (!value) callback(new Error('请输入新密码'))
     else if (value.length < 8 || !/[A-Za-z]/.test(value) || !/\d/.test(value)) callback(new Error('至少 8 位，并同时包含字母和数字'))
+    else if (value.length > 128) callback(new Error('密码不能超过 128 个字符'))
     else if (value === passwordForm.currentPassword) callback(new Error('新密码不能与当前密码相同'))
     else callback()
   } }],

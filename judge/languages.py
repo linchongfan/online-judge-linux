@@ -31,7 +31,7 @@ class LanguageAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def run_command(self, work_dir: Path) -> list[str]:
+    def run_command(self, work_dir: Path, memory_limit_kb: int | None = None) -> list[str]:
         raise NotImplementedError
 
 
@@ -58,9 +58,12 @@ class NativeAdapter(LanguageAdapter):
             self.source_name,
             "-o",
             self.executable_name,
+            # libm is not linked by default; math.h users (sqrt/pow/...)
+            # would otherwise fail to link on every submission.
+            "-lm",
         ]
 
-    def run_command(self, work_dir: Path) -> list[str]:
+    def run_command(self, work_dir: Path, memory_limit_kb: int | None = None) -> list[str]:
         return [str(work_dir / self.executable_name)]
 
 
@@ -77,8 +80,16 @@ class JavaAdapter(LanguageAdapter):
         # the Java 8 language and API surface for cross-platform consistency.
         return [str(self.toolchain.javac()), "--release", "8", "-encoding", "UTF-8", self.source_name]
 
-    def run_command(self, work_dir: Path) -> list[str]:
-        return [str(self.toolchain.java()), "-cp", ".", "Main"]
+    def run_command(self, work_dir: Path, memory_limit_kb: int | None = None) -> list[str]:
+        command = [str(self.toolchain.java())]
+        if memory_limit_kb is not None:
+            # Deterministic heap ceiling instead of relying on JVM ergonomics:
+            # half the sandbox memory for the heap, the rest for metaspace,
+            # stacks and code cache. Serial GC keeps small-box overhead low.
+            heap_mb = max(64, memory_limit_kb // 1024 // 2)
+            command.extend([f"-Xmx{heap_mb}m", "-XX:+UseSerialGC"])
+        command.extend(["-cp", ".", "Main"])
+        return command
 
 
 class PythonAdapter(LanguageAdapter):
@@ -100,9 +111,9 @@ class PythonAdapter(LanguageAdapter):
             self.source_name,
         ]
 
-    def run_command(self, work_dir: Path) -> list[str]:
+    def run_command(self, work_dir: Path, memory_limit_kb: int | None = None) -> list[str]:
         # This path is never inferred from sys.executable: it is the separately
-        # configured user Python (the production target is Python 3.8.6).
+        # configured user Python (the Linux production baseline is Python 3.12).
         return [str(self.toolchain.user_python()), "-I", "-B", self.source_name]
 
 

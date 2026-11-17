@@ -11,7 +11,8 @@
   --text-strong: #142b4a;
   --text: #29415f;
   --text-secondary: #607592;
-  --text-tertiary: #8ca0b6;
+  /* >= 4.5:1 on white so small secondary text meets WCAG AA. */
+  --text-tertiary: #64748b;
   --border: #dfe8f3;
   --surface: #ffffff;
   --surface-soft: #f4f8fd;

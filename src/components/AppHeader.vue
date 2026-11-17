@@ -37,7 +37,11 @@ async function refreshContestNotifications() {
       .filter(contest => contest.publicationStatus === 'published')
       .map(contest => contest.id)
     if (route.path.startsWith('/contests')) markContestsRead()
-  } catch { activeContestIds.value = [] } finally { refreshingContests = false }
+  } catch (error) {
+    // Keep the last known badges: clearing them on a transient failure
+    // would silently signal "no active contests".
+    console.warn('竞赛通知刷新失败，保留上次状态', error)
+  } finally { refreshingContests = false }
 }
 
 onMounted(() => {

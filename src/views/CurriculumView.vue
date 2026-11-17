@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { CircleCheckFilled, Clock, Reading } from '@element-plus/icons-vue'
 import DifficultyTag from '../components/DifficultyTag.vue'
@@ -49,25 +49,31 @@ function modulePercent(items: ProblemListItem[]): number {
   return items.length ? Math.round((moduleSolved(items) / items.length) * 100) : 0
 }
 
+let loadGeneration = 0
 async function load() {
+  const generation = ++loadGeneration
   loading.value = true
   error.value = ''
   try {
     const first = await listProblems({ page: 1, pageSize: 100 })
-    const pages = [first]
-    for (let page = 2; page <= first.pages; page += 1) {
-      pages.push(await listProblems({ page, pageSize: 100 }))
-    }
-    problems.value = pages
+    // Fetch remaining pages in parallel instead of one-by-one; the serial
+    // loop made first paint scale linearly with the problem count.
+    const rest = await Promise.all(
+      Array.from({ length: Math.max(0, first.pages - 1) }, (_, index) => listProblems({ page: index + 2, pageSize: 100 })),
+    )
+    if (generation !== loadGeneration) return
+    problems.value = [first, ...rest]
       .flatMap(page => page.items)
       .filter(item => item.id >= 2000 && item.id <= 2099)
   } catch {
+    if (generation !== loadGeneration) return
     error.value = '题单加载失败，请稍后重试'
     problems.value = []
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
+onBeforeUnmount(() => { loadGeneration += 1 })
 
 onMounted(load)
 </script>

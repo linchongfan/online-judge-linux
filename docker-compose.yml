@@ -1,32 +1,43 @@
+# LOCAL DEVELOPMENT ONLY — never use this file on a public server.
+# Ports are bound to 127.0.0.1 and passwords default to obvious dev-only
+# values; override every password via environment for anything beyond local
+# development. Production deployments use deploy/linux/docker-compose.yml,
+# which requires strong injected secrets.
 services:
   mysql:
     image: mysql:8.4.13
     environment:
       MYSQL_DATABASE: xinbaoyan
       MYSQL_USER: oj
-      MYSQL_PASSWORD: change-me
-      MYSQL_ROOT_PASSWORD: change-root-password
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-oj-dev-only}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root-dev-only}
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uoj", "-pchange-me"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
       timeout: 5s
       retries: 20
+    security_opt:
+      - no-new-privileges:true
   redis:
     image: redis:8.10.3
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-redis-dev-only}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis-dev-only}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
       interval: 5s
       timeout: 3s
       retries: 20
+    security_opt:
+      - no-new-privileges:true
 volumes:
   mysql-data:
   redis-data:

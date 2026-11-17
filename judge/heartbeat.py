@@ -64,8 +64,9 @@ def _process_metrics() -> tuple[float | None, float | None]:
 def send_heartbeat() -> None:
     api_url = os.environ.get("JUDGE_HEARTBEAT_URL", "http://127.0.0.1:8000/api/v1/internal/judge/heartbeat")
     secret = os.environ.get("JUDGE_RESULT_SECRET", "")
-    if len(secret) < 16:
-        raise RuntimeError("JUDGE_RESULT_SECRET must be configured")
+    minimum = 32 if os.environ.get("JUDGE_ENV", "development").lower() == "production" else 16
+    if len(secret) < minimum:
+        raise RuntimeError(f"JUDGE_RESULT_SECRET must be configured (>= {minimum} chars)")
     with _lock:
         active = _active_tasks
         completed = _completed

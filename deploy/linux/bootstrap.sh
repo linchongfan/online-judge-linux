@@ -20,6 +20,11 @@ fi
 IS_IP=0
 if [[ $DOMAIN =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     IS_IP=1
+elif [[ ! $DOMAIN =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+    # The value is substituted into nginx configuration via sed; reject
+    # anything that could break the template or inject directives.
+    echo "Invalid domain or IP: $DOMAIN" >&2
+    exit 1
 fi
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 BASE_DIR=/opt/xinbaoyan
@@ -66,8 +71,16 @@ fi
 
 apt-get install -y \
     ca-certificates certbot curl default-mysql-client git gzip nginx nodejs npm openssl \
-    "$PYTHON_PKG" "$PYTHON_VENV_PKG" redis-tools rsync tar util-linux \
+    "$PYTHON_PKG" "$PYTHON_VENV_PKG" redis-tools rsync tar ufw util-linux \
     ${DOCKER_PKGS[@]+"${DOCKER_PKGS[@]}"}
+
+# Defense in depth beyond loopback bindings: default-deny inbound, allowing
+# only SSH and the web ports. SSH is allowed BEFORE enabling so a remote
+# operator cannot lock themselves out.
+ufw allow OpenSSH
+ufw allow "$HTTP_PORT/tcp"
+ufw allow 443/tcp
+ufw --force enable
 
 if ! command -v bun >/dev/null 2>&1 || [[ $(bun --version) != 1.4.2 ]]; then
     npm install -g bun@1.4.2
@@ -106,9 +119,16 @@ else
         nginx -t
         systemctl enable --now nginx
         systemctl restart nginx
-        certbot certonly --webroot --webroot-path /var/www/certbot \
+        if ! certbot certonly --webroot --webroot-path /var/www/certbot \
             --domain "$DOMAIN" --email "$LETSENCRYPT_EMAIL" \
-            --agree-tos --non-interactive --keep-until-expiring
+            --agree-tos --non-interactive --keep-until-expiring; then
+            # Do not leave the temporary ACME site (which 503s everything)
+            # enabled after a failed certificate request.
+            unlink /etc/nginx/sites-enabled/xinbaoyan-acme.conf
+            nginx -t && systemctl reload nginx
+            echo "certbot failed; fix DNS/port 80 reachability and re-run bootstrap." >&2
+            exit 1
+        fi
         unlink /etc/nginx/sites-enabled/xinbaoyan-acme.conf
     fi
     if [[ $HTTP_PORT != 80 ]]; then
@@ -117,6 +137,8 @@ else
     sed -e "s/__DOMAIN__/$DOMAIN/g" -e "s/__HTTP_PORT__/$HTTP_PORT/g" "$SCRIPT_DIR/nginx.conf" > /etc/nginx/sites-available/xinbaoyan.conf
 fi
 ln -sfn /etc/nginx/sites-available/xinbaoyan.conf /etc/nginx/sites-enabled/xinbaoyan.conf
+# The Ubuntu default site would otherwise answer unknown Host headers on 80.
+rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl enable --now nginx
 systemctl restart nginx

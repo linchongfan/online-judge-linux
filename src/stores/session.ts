@@ -54,11 +54,25 @@ function clearSession(): void {
   session.initializing = false
 }
 
-// A refresh credential rejected for good invalidates the in-memory session;
-// the router guard then redirects protected pages to the login screen.
+type SessionInvalidatedHandler = () => void
+
+let sessionInvalidatedHandler: SessionInvalidatedHandler | null = null
+
+/**
+ * The router registers a handler here so a mid-session revocation (admin
+ * disables the account, password change elsewhere, refresh reuse detected)
+ * actively navigates protected pages to login instead of leaving the user
+ * on a page where every subsequent request fails.
+ */
+export function onSessionInvalidated(handler: SessionInvalidatedHandler | null): void {
+  sessionInvalidatedHandler = handler
+}
+
+// A refresh credential rejected for good invalidates the in-memory session.
 onAuthFailure(() => {
   clearSession()
   session.initialized = true
+  sessionInvalidatedHandler?.()
 })
 
 let initialization: Promise<UserProfile | null> | null = null
