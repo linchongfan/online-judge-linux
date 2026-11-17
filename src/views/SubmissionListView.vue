@@ -53,14 +53,18 @@ const selectedDiagnostic = computed(() => {
 async function loadRecords(silent = false) {
   const current = ++generation
   // Background polling must not flash the full-table loading overlay every
-  // few seconds; only user-initiated loads show it.
-  if (!silent) loading.value = true
-  error.value = ''
+  // few seconds, nor wipe a persistent error banner; only user-initiated
+  // loads manage the loading/error display state.
+  if (!silent) {
+    loading.value = true
+    error.value = ''
+  }
   try {
     const data = await listSubmissions({ page: currentPage.value, pageSize, keyword: keyword.value.trim() || undefined, status: status.value || undefined, language: language.value || undefined })
     if (current !== generation) return
     records.value = data.items
     total.value = data.total
+    error.value = ''
   } catch (caught) {
     if (current !== generation) return
     if (!silent) error.value = caught instanceof ApiError ? caught.message : '提交记录加载失败'

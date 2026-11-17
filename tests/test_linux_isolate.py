@@ -272,3 +272,103 @@ def test_unknown_backend_name_still_fails_closed(tmp_path: Path) -> None:
 
     with pytest.raises(ToolchainConfigurationError, match="isolate"):
         JudgeConfig.from_env({SANDBOX_BACKEND_ENV: "bubblewrap", "JUDGE_WORK_ROOT": str(tmp_path)})
+
+
+def test_spawn_evicts_stale_final_info_for_reused_pid(
+    tmp_path: Path,
+    toolchain: ToolchainConfig,
+    runtime_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from judge.sandbox import SandboxExecutionInfo
+
+    backend = _backend(tmp_path, toolchain, runtime_dirs, monkeypatch)
+    monkeypatch.setattr(
+        "judge.linux_isolate.subprocess.run",
+        lambda argv, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        "judge.linux_isolate.subprocess.Popen", lambda argv, **kw: _FakePopen(pid=4242)
+    )
+    monkeypatch.setattr(backend, "_allocate_box_id", lambda: 7)
+    # A previous task with the same (reused) pid left cached info behind.
+    backend._final_info[4242] = SandboxExecutionInfo(runtime_ms=999)
+
+    work_dir = tmp_path / "task"
+    work_dir.mkdir()
+    stdin, stdout, stderr = _stdio(tmp_path)
+    backend.spawn(
+        argv=[str(toolchain.user_python_path), "Main.py"],
+        cwd=work_dir,
+        env={},
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        creationflags=0,
+        start_new_session=True,
+        limits=ProcessLimits(wall_timeout_ms=1000, output_limit_bytes=1024),
+    )
+    assert 4242 not in backend._final_info
+
+
+def test_init_resets_cgroup_only_after_cgroup_failure(
+    tmp_path: Path,
+    toolchain: ToolchainConfig,
+    runtime_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _backend(tmp_path, toolchain, runtime_dirs, monkeypatch)
+    attempts: list[int] = []
+    resets: list[int] = []
+
+    def fake_run(argv: list[str], **kwargs: Any) -> types.SimpleNamespace:
+        attempts.append(1)
+        if len(attempts) == 1:
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="Cannot create cgroup: stale")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("judge.linux_isolate.subprocess.run", fake_run)
+    monkeypatch.setattr(backend, "_reset_cgroup", lambda box_id: resets.append(box_id))
+    backend._init_box(5, 51200, 4096)
+    assert len(attempts) == 2
+    assert resets == [5]
+
+    # Non-cgroup failures must not trigger a cgroup reset (could kill a box
+    # actively locked by another worker).
+    attempts.clear()
+    resets.clear()
+
+    def fake_run_locked(argv: list[str], **kwargs: Any) -> types.SimpleNamespace:
+        attempts.append(1)
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="Cannot lock box: busy")
+
+    monkeypatch.setattr("judge.linux_isolate.subprocess.run", fake_run_locked)
+    with pytest.raises(SandboxConfigurationError, match="lock"):
+        backend._init_box(6, 51200, 4096)
+    assert len(attempts) == 1
+    assert resets == []
+
+
+def test_terminate_kills_isolate_before_draining_proxy(
+    tmp_path: Path,
+    toolchain: ToolchainConfig,
+    runtime_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _backend(tmp_path, toolchain, runtime_dirs, monkeypatch)
+    order: list[str] = []
+
+    class OrderedPopen(_FakePopen):
+        def send_signal(self, sig: int) -> None:
+            order.append("kill")
+            super().send_signal(sig)
+
+    class OrderedProxy:
+        def finish(self, timeout_seconds: float = 5.0) -> None:
+            order.append("flush")
+
+    process = OrderedPopen(pid=777)
+    state = types.SimpleNamespace(proxy=OrderedProxy(), isolate=process, box_id=1)
+    monkeypatch.setattr(backend, "_state_for", lambda p: state)
+    backend.terminate(process)
+    assert order == ["kill", "flush"]

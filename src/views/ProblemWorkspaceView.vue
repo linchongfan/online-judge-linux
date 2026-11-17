@@ -320,6 +320,9 @@ async function loadWorkspace() {
   const generation = ++loadGeneration
   polling.stop()
   activeSubmissionId.value = null
+  // Drop the previous problem's navigation until the new position loads,
+  // so prev/next can never jump to the old problem's neighbours.
+  position.value = null
   loading.value = true
   loadError.value = ''
   solution.value = null

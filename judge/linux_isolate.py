@@ -3,11 +3,13 @@
 Isolation enforced here, before untrusted code runs:
 
 * A fresh isolate box per spawn, with separate network and mount namespaces.
-* cgroup v2 accounting for wall time, CPU time, peak memory, process count,
-  task directory blocks/inodes, and sandbox-internal cleanup.
-* A minimal read-only root filesystem with only the mounted task directory
-  writable inside the box.
-* Hard combined stdout/stderr output enforcement through a supervising proxy.
+* cgroup v2 accounting for wall time, CPU time, peak memory and process count;
+  disk quotas are opt-in (JUDGE_ENABLE_DISK_QUOTA=1) because tmpfs box roots
+  cannot enforce project quotas.
+* The task directory is the only writable mount inside the box; toolchains
+  and /etc are mounted read-only.
+* Per-stream hard output caps in a supervising proxy, plus the combined
+  stdout+stderr cap enforced by ProcessRunner on every poll.
 * Whole-box termination and box cleanup on every path, including failures.
 
 The backend never claims an isolation capability that it has not positively
@@ -241,6 +243,15 @@ class LinuxIsolateBackend(SandboxBackend):
         self._lock = threading.Lock()
         self._mounts = self._build_mounts()
         self._meta_root.mkdir(parents=True, exist_ok=True)
+        # Task artifacts (source, redirected I/O) are relaxed to 0666/0777 for
+        # cross-UID case reuse, so the root directories must not be
+        # world-traversable or other local users could read/tamper with them.
+        for directory in (self._meta_root, self._work_root):
+            if directory is not None:
+                try:
+                    directory.chmod(0o750)
+                except OSError:
+                    pass
         self._validate_static_configuration()
 
     @property
@@ -407,8 +418,8 @@ class LinuxIsolateBackend(SandboxBackend):
             "--env=TEMP=/box",
             "--env=PATH=/usr/bin:/bin",
             f"--dir=/box={work_dir}:rw",
-            f"--dir={_TOOLCHAIN_PATH}={self._toolchain_mount_source()}",
-            "--dir=/etc",
+            f"--dir={_TOOLCHAIN_PATH}={self._toolchain_mount_source()}:ro",
+            "--dir=/etc:ro",
             f"--meta={state.meta_file}",
             f"--stdin=/box/{state.stdin_file.name}",
             f"--stdout=/box/{state.stdout_file.name}",
@@ -438,15 +449,28 @@ class LinuxIsolateBackend(SandboxBackend):
             )
             state.proxy.start({"stdout": state.stdout_file, "stderr": state.stderr_file})
             with self._lock:
+                # OS pids wrap around: a reused pid must never inherit the
+                # previous task's cached execution info.
+                self._final_info.pop(state.isolate.pid, None)
                 self._states[state.isolate.pid] = state
             return state.isolate
         except BaseException:
             self._rollback(state)
             raise
 
+    def _box_cgroup_root(self, box_id: int) -> Path:
+        # Matches the cg_root written by both deployment paths
+        # (deploy/judge-linux/bootstrap.sh and the docker judge image).
+        return self._cgroup_root / "isolate" / f"box-{box_id}"
+
     def _reset_cgroup(self, box_id: int) -> None:
-        """Remove a stale isolate cgroup left by a killed run."""
-        root = Path("/sys/fs/cgroup/isolate") / f"box-{box_id}"
+        """Remove a stale isolate cgroup left by a killed run.
+
+        Only invoked after a failed --init: resetting before init could kill
+        processes of a box that another worker is actively using (isolate's
+        own box lock is only checked during --init).
+        """
+        root = self._box_cgroup_root(box_id)
         if not root.exists():
             return
         try:
@@ -465,7 +489,6 @@ class LinuxIsolateBackend(SandboxBackend):
             pass
 
     def _init_box(self, box_id: int, disk_blocks: int, disk_inodes: int) -> None:
-        self._reset_cgroup(box_id)
         argv = [
             str(self._isolate_path),
             "--box-id",
@@ -482,6 +505,18 @@ class LinuxIsolateBackend(SandboxBackend):
             text=True,
             check=False,
         )
+        if result.returncode != 0 and "cgroup" in result.stderr.lower():
+            # A stale cgroup from a killed run can block init; clear it and
+            # retry once. Scoped to cgroup errors so a box locked by another
+            # worker is never force-killed here.
+            self._reset_cgroup(box_id)
+            result = subprocess.run(
+                argv,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         if result.returncode != 0:
             raise SandboxConfigurationError(f"isolate --init failed: {result.stderr.strip()}")
 
@@ -515,8 +550,9 @@ class LinuxIsolateBackend(SandboxBackend):
 
     def terminate(self, process: subprocess.Popen[bytes]) -> None:
         state = self._state_for(process)
-        if state.proxy is not None:
-            state.proxy.finish()
+        # Kill first, then drain the proxy: joining the pump while the program
+        # still runs would delay termination by up to the join timeout and
+        # lose output written between the flush and the kill.
         if state.isolate is not None and state.isolate.poll() is None:
             state.isolate.send_signal(getattr(signal, "SIGKILL", signal.SIGTERM))
         if state.isolate is not None:
@@ -524,14 +560,17 @@ class LinuxIsolateBackend(SandboxBackend):
                 state.isolate.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._isolate_cleanup(state)
+        if state.proxy is not None:
+            state.proxy.finish()
 
     def memory_usage_kb(self, process: subprocess.Popen[bytes]) -> int | None:
         state = self._state_for(process)
         # Kernels before 5.19 have no cgroup memory.peak, so fall back to the
         # isolate meta max-rss (whole-run rusage) and finally live usage.
+        cgroup_root = self._box_cgroup_root(state.box_id)
         for candidate in (
-            Path(f"/sys/fs/cgroup/isolate/box-{state.box_id}/memory.peak"),
-            Path(f"/sys/fs/cgroup/isolate/box-{state.box_id}/memory.current"),
+            cgroup_root / "memory.peak",
+            cgroup_root / "memory.current",
         ):
             try:
                 return max(1, int(candidate.read_text(encoding="utf-8").strip()) // 1024)
@@ -594,6 +633,10 @@ class LinuxIsolateBackend(SandboxBackend):
             state.proxy.finish()
         try:
             self._final_info[process.pid] = self.execution_info(process)
+            # Bounded cache: entries exist so execution_info() still works
+            # after cleanup; evict oldest beyond a generous window.
+            while len(self._final_info) > 1024:
+                self._final_info.pop(next(iter(self._final_info)))
         except Exception:
             pass
         if state.isolate is not None and state.isolate.poll() is None:

@@ -19,6 +19,9 @@ WORK_ROOT="$BASE_DIR/work"
 META_ROOT="$BASE_DIR/meta"
 
 mkdir -p "$BASE_DIR" "$WORK_ROOT" "$META_ROOT"
+# Task artifacts are relaxed for cross-UID case reuse; keep the roots
+# non-world-traversable so other local users cannot read or tamper with them.
+chmod 750 "$WORK_ROOT" "$META_ROOT"
 if [[ -e $ROOTFS && ${1:-} != "--rebuild" ]]; then
     echo "Rootfs already exists. Use --rebuild after removing the old rootfs from the trusted manifest." >&2
     exit 1
